@@ -1,0 +1,172 @@
+<!DOCTYPE html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#14141a"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon-192.png"><title>AudioForge</title><style>
+:root{--bg:#14141a;--p:#1d1d27;--p2:#2a2a3a;--t:#e8e8f2;--m:#9a9ab0;--a:#8b5cf6;--c:#22d3ee;--b:#3b82f6}
+[data-theme=light]{--bg:#f3f3f8;--p:#fff;--p2:#e6e6f0;--t:#1a1a26;--m:#666680}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:16px system-ui,sans-serif;display:flex;height:100vh;height:100dvh}
+nav{width:190px;background:var(--p);padding:12px;display:flex;flex-direction:column;gap:6px;overflow:auto;flex:none}
+nav b{font-size:20px;background:linear-gradient(90deg,var(--a),var(--c));-webkit-background-clip:text;background-clip:text;color:transparent;margin:4px 6px 10px}
+nav button{text-align:left;background:none;border:0;color:var(--m);padding:14px;border-radius:12px;font-size:15px;transition:.2s}
+nav button.on{background:linear-gradient(90deg,var(--a),var(--b));color:#fff}
+main{flex:1;overflow:auto;padding:18px}.v{max-width:900px;margin:auto;animation:f .3s}@keyframes f{from{opacity:0;transform:translateY(8px)}}
+h2{margin:0 0 4px}.sub{color:var(--m);margin:0 0 14px;font-size:14px}
+.card{background:var(--p);border-radius:16px;padding:14px;margin-bottom:12px;border:1px solid var(--p2)}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+label{display:block;font-size:13px;color:var(--m);margin:8px 0 4px}
+textarea,input,select{width:100%;background:var(--bg);color:var(--t);border:1px solid var(--p2);border-radius:12px;padding:12px;font:inherit;min-height:48px}
+input[type=range]{padding:0;accent-color:var(--a)}textarea{min-height:130px;resize:vertical}input:disabled{opacity:.35}
+button.bt{background:linear-gradient(90deg,var(--a),var(--b));color:#fff;border:0;border-radius:12px;padding:14px 18px;font-size:15px;min-height:48px;margin:6px 6px 0 0}
+button.bt.s{background:var(--p2);color:var(--t)}button.bt.r{background:#dc2626}button:disabled{opacity:.4}
+canvas{width:100%;height:110px;background:var(--bg);border-radius:12px;display:block;margin:8px 0}audio{width:100%;margin-top:6px}
+.note{font-size:13px;color:var(--m);border-left:3px solid var(--c);padding-left:10px;margin:8px 0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#000c;color:#fff;padding:12px 18px;border-radius:12px;opacity:0;pointer-events:none;transition:.3s;max-width:90%;z-index:9}#toast.on{opacity:1}
+@media(min-width:900px){.v{max-width:1100px}canvas{height:150px}}
+@media(max-width:700px){body{flex-direction:column-reverse}nav{width:100%;flex-direction:row;padding:6px;gap:2px}nav b{display:none}nav button{padding:12px 10px;font-size:13px;white-space:nowrap;text-align:center}}
+#dm{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}#dm[hidden]{display:none}#dm .card{width:100%;max-width:420px;margin:0}
+</style></head><body>
+<nav id="nav"><b>AudioForge</b></nav>
+<main>
+<section class="v" id="home"><h2>AudioForge</h2><p class="sub">Audio studio that runs in your browser. Everything is saved on this device.</p><div class="g" id="hg"></div><div class="card" style="margin-top:12px"><b>Recent</b><div class="note" id="hs"></div><div id="hr"></div></div></section>
+
+<section class="v" id="voice" hidden><h2>AI Voice Studio</h2><p class="sub">Text to speech</p><div class="card">
+<label>Engine</label><select id="ve"><option value="kokoro">Kokoro TTS (in browser, free AI model, ~90 MB first download)</option><option value="server">Local server (Kokoro-FastAPI, OpenAI-compatible)</option><option value="browser">Basic Browser TTS (playback only, not AI quality)</option></select>
+<div class="note" id="vnote"></div>
+<label>Text <span id="vc">0</span> characters</label><textarea id="vt" placeholder="Type what the voice should say..."></textarea>
+<div class="g"><div><label>Voice</label><select id="vv"></select></div><div><label>Style (changes speed)</label><select id="vem"></select></div>
+<div><label>Speed <span id="vsl">1.00</span>x</label><input type="range" id="vs" min="0.5" max="2" step="0.05" value="1"></div>
+<div><label>Pitch <span id="vpl">1.00</span> (Basic Browser TTS only)</label><input type="range" id="vp" min="0.5" max="2" step="0.05" value="1"></div></div>
+<button class="bt" id="vg">Generate speech</button><button class="bt s" id="vx">Stop</button><div class="note" id="vst"></div><div id="vo"></div></div></section>
+
+<section class="v" id="sfx" hidden><h2>Sound Effects</h2><p class="sub">Free retro-style effects made on your device, no download</p><div class="card">
+<label>Effect</label><select id="xk"></select>
+<div class="g"><div><label>Pitch <span id="xpl">1.00</span>x</label><input type="range" id="xp" min="0.5" max="2" step="0.05" value="1"></div><div><label>Length <span id="xll">1.00</span>x</label><input type="range" id="xl" min="0.5" max="2" step="0.05" value="1"></div></div>
+<label class="row"><input type="checkbox" id="xr" style="width:24px;min-height:0"> Randomize a little each time</label>
+<button class="bt" id="xg">Generate effect</button><div id="xo"></div></div></section>
+
+<section class="v" id="lib" hidden><h2>My Library</h2><p class="sub">Stored on this device (IndexedDB)</p><div class="card"><div class="g"><input id="lq" placeholder="Search..."><select id="lc"><option value="">All categories</option><option>voice</option><option>sfx</option><option>recording</option><option>imported</option></select></div>
+<label>Import audio files</label><input type="file" id="li" accept="audio/*" multiple></div><div id="ll"></div></section>
+
+<section class="v" id="set" hidden><h2>Settings</h2><p class="sub">Preferences</p><div class="card">
+<label>Theme</label><select id="st"><option value="dark">Dark</option><option value="light">Light</option></select>
+<label>Default download format</label><select id="sfm"><option value="wav">WAV</option><option value="mp3">MP3</option><option value="ogg">OGG</option></select>
+<label>Local TTS server URL</label><input id="stts" placeholder="http://localhost:8880">
+<div class="note">Every download asks for a file name and format. MP3 and OGG are converted on your device. MP3 loads a small encoder from the internet the first time.</div></div>
+<div class="card"><b>Storage</b><div class="note" id="sto">...</div><button class="bt r" id="sclr">Clear library</button></div></section>
+</main><div id="dm" hidden><div class="card"><b>Download</b><label>File name</label><input id="dn"><label>Format</label><select id="df"><option value="wav">WAV (lossless, biggest)</option><option value="mp3">MP3</option><option value="ogg">OGG (Opus)</option></select><div class="note" id="dnote"></div><button class="bt" id="dok">Download</button><button class="bt s" id="dcx">Cancel</button></div></div><div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const S=Object.assign({theme:'dark',tts:'http://localhost:8880'},(()=>{try{return JSON.parse(localStorage.audioforge_s||localStorage.af)}catch{return{}}})());
+const save=()=>{try{localStorage.audioforge_s=JSON.stringify(S)}catch{}};
+try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch{}
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('on'),3800)}
+let AC;const ctx=()=>{AC=AC||new(window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume();return AC};
+const decode=async b=>ctx().decodeAudioData(await b.arrayBuffer());
+const mmss=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0');
+const kb=n=>n>1e6?(n/1e6).toFixed(1)+' MB':Math.round(n/1e3)+' KB';
+const ext=b=>/mpeg|mp3/.test(b.type)?'mp3':/wav/.test(b.type)?'wav':/ogg/.test(b.type)?'ogg':/webm/.test(b.type)?'webm':/mp4/.test(b.type)?'m4a':'wav';
+function dl(b,name){const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name.replace(/\.\w+$/,'')+'.'+ext(b);document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000)}
+function wav(buf){const n=buf.length,ch=buf.numberOfChannels,sr=buf.sampleRate,o=new DataView(new ArrayBuffer(44+n*ch*2)),w=(p,s)=>[...s].forEach((c,i)=>o.setUint8(p+i,c.charCodeAt(0)));
+w(0,'RIFF');o.setUint32(4,36+n*ch*2,true);w(8,'WAVEfmt ');o.setUint32(16,16,true);o.setUint16(20,1,true);o.setUint16(22,ch,true);o.setUint32(24,sr,true);o.setUint32(28,sr*ch*2,true);o.setUint16(32,ch*2,true);o.setUint16(34,16,true);w(36,'data');o.setUint32(40,n*ch*2,true);
+const d=[];for(let c=0;c<ch;c++)d.push(buf.getChannelData(c));let p=44;for(let i=0;i<n;i++)for(let c=0;c<ch;c++){const s=Math.max(-1,Math.min(1,d[c][i]));o.setInt16(p,s<0?s*32768:s*32767,true);p+=2}return new Blob([o],{type:'audio/wav'})}
+function wave(cv,buf){const w=cv.width=cv.clientWidth*2,h=cv.height=cv.clientHeight*2,g=cv.getContext('2d'),d=buf.getChannelData(0),st=Math.max(1,Math.floor(d.length/w));
+g.clearRect(0,0,w,h);const gr=g.createLinearGradient(0,0,w,0);gr.addColorStop(0,'#8b5cf6');gr.addColorStop(1,'#22d3ee');g.fillStyle=gr;
+for(let x=0;x<w;x++){let mn=1,mx=-1;for(let i=0;i<st;i++){const v=d[x*st+i]||0;if(v<mn)mn=v;if(v>mx)mx=v}g.fillRect(x,(1-mx)*h/2,1,Math.max(1,(mx-mn)*h/2))}}
+/* IndexedDB */
+const db=new Promise((res,rej)=>{const r=indexedDB.open('audioforge',1);r.onupgradeneeded=()=>r.result.createObjectStore('lib',{keyPath:'id'});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+const tx=async(m,f)=>{const d=await db;return new Promise((res,rej)=>{const t=d.transaction('lib',m),q=f(t.objectStore('lib'));t.oncomplete=()=>res(q.result);t.onerror=()=>rej(t.error)})};
+const put=x=>tx('readwrite',s=>s.put(x)),del=id=>tx('readwrite',s=>s.delete(id)),all=()=>tx('readonly',s=>s.getAll()),clr=()=>tx('readwrite',s=>s.clear());
+async function addLib(b,name,cat){let dur=0;try{dur=(await decode(b)).duration}catch{}try{await put({id:Date.now()+'-'+Math.random().toString(36).slice(2),name,cat,blob:b,dur,size:b.size,date:Date.now()});toast('Saved to library')}catch(e){toast('Could not save: '+e.message)}}
+/* navigation */
+const V=[['home','Home'],['voice','AI Voice'],['sfx','SFX'],['lib','Library'],['set','Settings']];let cur='home';
+V.forEach(([id,l])=>{const b=document.createElement('button');b.textContent=l;b.dataset.v=id;b.onclick=()=>show(id);$('#nav').appendChild(b)});
+V.slice(1,4).forEach(([id,l],i)=>{const c=document.createElement('div');c.className='card';c.innerHTML='<b></b><div class="note"></div>';c.querySelector('b').textContent=l;c.querySelector('.note').textContent=['Kokoro AI voices in-browser or via local server','Make free sound effects','Saved audio, search, rename'][i];c.onclick=()=>show(id);$('#hg').appendChild(c)});
+function show(id,np){if(!np&&id!==cur)history.pushState({v:id},'');cur=id;$$('.v').forEach(x=>x.hidden=x.id!==id);$$('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===id));if(id==='lib')renderLib();if(id==='set')storage();if(id==='home')homeInfo();$('main').scrollTop=0}
+history.replaceState({v:'home'},'');
+window.onpopstate=e=>{if(!$('#dm').hidden){$('#dm').hidden=true;return}show((e.state&&e.state.v)||'home',1)};
+async function homeInfo(){let t='';$('#hr').innerHTML='';try{const e=await navigator.storage.estimate(),l=(await all()).sort((a,b)=>b.date-a.date);t=l.length?l.length+' files, '+kb(e.usage)+' used':'No saved audio yet.';l.slice(0,3).forEach(i=>{const d=document.createElement('div');d.className='note';d.textContent=i.name+' | '+i.cat;$('#hr').appendChild(d)})}catch{}$('#hs').textContent=t}
+/* result box */
+function out(box,b,cat,name){box.innerHTML='';const cv=document.createElement('canvas'),au=document.createElement('audio'),r=document.createElement('div');au.controls=true;au.src=URL.createObjectURL(b);box.append(cv,au,r);
+[['Download','bt',()=>dlg(b,name)],['Save to library','bt s',async()=>{const n=prompt('Name this audio',name);if(n===null)return;await addLib(b,n.trim()||name,cat)}]].forEach(([t,c,f])=>{const x=document.createElement('button');x.className=c;x.textContent=t;x.onclick=f;r.appendChild(x)});
+decode(b).then(buf=>wave(cv,buf)).catch(()=>{cv.remove()})}
+/* VOICE */
+const HAS='speechSynthesis' in window&&typeof SpeechSynthesisUtterance!=='undefined',TV=()=>HAS?speechSynthesis.getVoices():[];
+const EM={Neutral:[1,1],Happy:[1.1,1.2],Angry:[1.1,.8],Sad:[.85,.8],Scary:[.8,.6],Calm:[.9,1],Excited:[1.25,1.3],Narrator:[.95,.9]};
+Object.keys(EM).forEach(k=>$('#vem').add(new Option(k,k)));
+const KV=[['af_heart','Heart (female, US)'],['af_bella','Bella (female, US)'],['af_nicole','Nicole (female, US, soft)'],['af_sarah','Sarah (female, US)'],['af_sky','Sky (female, US)'],['bf_emma','Emma (female, UK)'],['bf_isabella','Isabella (female, UK)'],['am_adam','Adam (male, US)'],['am_michael','Michael (male, US)'],['bm_george','George (male, UK)'],['bm_lewis','Lewis (male, UK)']];
+function voices(){const e=$('#ve').value,s=$('#vv');s.innerHTML='';if(e==='browser')TV().forEach((v,i)=>s.add(new Option(v.name+' ('+v.lang+')',i)));else KV.forEach(([v,l])=>s.add(new Option(l,v)));$('#vp').disabled=e!=='browser';
+$('#vnote').textContent={kokoro:'Runs the open-source Kokoro-82M model on your device (WASM). First use downloads the model, then your browser caches it. Needs internet once. Style only changes speed; Kokoro has no emotion control.',server:'Uses a Kokoro-FastAPI server, e.g. Docker image ghcr.io/remsky/kokoro-fastapi-cpu on port 8880. URL is in Settings.',browser:'Basic Browser TTS: your device voices, much lower quality than AI voices. It can only be played, the browser does not allow saving its audio. Style changes speed and pitch.'}[e]}
+const dr=()=>{S.dr={t:$('#vt').value,e:$('#ve').value,v:$('#vv').value,s:$('#vs').value,m:$('#vem').value};save()};
+$('#ve').onchange=()=>{voices();dr()};if(HAS)speechSynthesis.onvoiceschanged=()=>$('#ve').value==='browser'&&voices();voices();
+$('#vt').oninput=()=>{$('#vc').textContent=$('#vt').value.length;dr()};$('#vs').oninput=()=>{$('#vsl').textContent=(+$('#vs').value).toFixed(2);dr()};$('#vp').oninput=()=>$('#vpl').textContent=(+$('#vp').value).toFixed(2);
+$('#vv').onchange=dr;$('#vem').onchange=dr;
+if(S.dr){$('#ve').value=S.dr.e||'kokoro';voices();$('#vt').value=S.dr.t||'';$('#vv').value=S.dr.v;$('#vs').value=S.dr.s||1;$('#vem').value=S.dr.m||'Neutral';$('#vc').textContent=$('#vt').value.length;$('#vsl').textContent=(+$('#vs').value).toFixed(2)}
+let K,PL='';async function kokoro(){if(K)return K;const{KokoroTTS}=await import('https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm');
+K=await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX',{dtype:'q8',device:'wasm',progress_callback:p=>{if(p.status==='progress'&&p.file)$('#vst').textContent=PL+'Downloading model: '+p.file.split('/').pop()+' '+Math.round(p.progress)+'%'}});return K}
+const KWC=`import {KokoroTTS} from 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm';let t;onmessage=async e=>{try{if(!t)t=await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX',{dtype:'q8',device:'wasm',progress_callback:p=>{if(p.status==='progress'&&p.file)postMessage({p:'Downloading model: '+p.file.split('/').pop()+' '+Math.round(p.progress)+'%'})}});postMessage({p:'Generating... (tap Stop to cancel)'});const a=await t.generate(e.data.text,{voice:e.data.voice,speed:e.data.speed});postMessage({blob:a.toBlob()})}catch(x){postMessage({err:String(x&&x.message||x)})}}`;
+let KW,KJ;
+function kStop(){if(KW){KW.terminate();KW=null}if(KJ){const j=KJ;KJ=null;j.rej(new Error('Stopped'))}}
+async function kMain(text,voice,speed){const t=await kokoro();$('#vst').textContent=PL+'Generating... (this page may pause)';await new Promise(r=>setTimeout(r,80));return(await t.generate(text,{voice,speed})).toBlob()}
+function kGen(text,voice,speed){return new Promise((res,rej)=>{KJ={res,rej};const st=$('#vst');
+if(!KW){try{KW=new Worker(URL.createObjectURL(new Blob([KWC],{type:'text/javascript'})),{type:'module'});
+KW.onmessage=e=>{const d=e.data;if(d.p)st.textContent=PL+d.p;else if(d.err){const j=KJ;KJ=null;j&&j.rej(new Error(d.err))}else if(d.blob){const j=KJ;KJ=null;j&&j.res(d.blob)}};
+KW.onerror=()=>{KW=null;if(KJ){const j=KJ;KJ=null;kMain(text,voice,speed).then(j.res,j.rej)}}}catch(x){KW=null;KJ=null;kMain(text,voice,speed).then(res,rej);return}}
+KW.postMessage({text,voice,speed})})}
+const chunks=t=>{const s=t.match(/[^.!?\n]+[.!?]*\s*/g)||[t],o=[];let c='';s.forEach(x=>{if((c+x).length>280&&c){o.push(c.trim());c=''}c+=x});if(c.trim())o.push(c.trim());return o};
+async function join(bs){const bf=[];for(const x of bs)bf.push(await decode(x));const n=bf.reduce((a,x)=>a+x.length,0),o=ctx().createBuffer(1,n,bf[0].sampleRate);let p=0;bf.forEach(x=>{o.getChannelData(0).set(x.getChannelData(0),p);p+=x.length});return wav(o)}
+$('#vx').onclick=()=>{HAS&&speechSynthesis.cancel();kStop()};
+$('#vg').onclick=async()=>{const text=$('#vt').value.trim();if(!text)return toast('Type some text first');const e=$('#ve').value,em=EM[$('#vem').value],sp=Math.min(2,Math.max(.5,+$('#vs').value*em[0])),btn=$('#vg'),st=$('#vst');btn.disabled=true;$('#vo').innerHTML='';let wl;try{wl=await navigator.wakeLock.request('screen')}catch{}
+try{if(e==='browser'){if(!HAS)throw new Error('Basic Browser TTS does not exist in this browser. Choose Kokoro.');const u=new SpeechSynthesisUtterance(text),v=TV()[$('#vv').value];if(v)u.voice=v;u.rate=sp;u.pitch=Math.min(2,+$('#vp').value*em[1]);speechSynthesis.cancel();speechSynthesis.speak(u);st.textContent='Playing with Basic Browser TTS (no file can be saved).'}
+else{let b;if(e==='kokoro'){const cs=chunks(text),bs=[];for(let i=0;i<cs.length;i++){PL=cs.length>1?'Part '+(i+1)+'/'+cs.length+' | ':'';st.textContent=PL+'Loading model...';bs.push(await kGen(cs[i],$('#vv').value,sp))}PL='';b=bs.length>1?await join(bs):bs[0]}
+else{st.textContent='Contacting server...';const r=await fetch(S.tts.replace(/\/$/,'')+'/v1/audio/speech',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'kokoro',input:text,voice:$('#vv').value,speed:sp,response_format:'wav'})});if(!r.ok)throw new Error('Server replied '+r.status);b=await r.blob()}
+st.textContent='Done.';out($('#vo'),b,'voice','voice-'+Date.now())}}
+catch(x){PL='';const q=x.message==='Stopped';st.textContent=q?'Stopped.':'';if(!q)toast('Voice failed: '+x.message);console.error(x)}try{wl&&wl.release()}catch{}btn.disabled=false};
+/* SFX */
+const SF={laser:{w:'sawtooth',f:[1800,150],d:.3},coin:{w:'square',f:[988,988],s:[1,1.34],d:.25},jump:{w:'square',f:[250,700],d:.25},powerup:{w:'square',f:[330,330],s:[1,1.25,1.5,2],d:.4},hit:{w:'square',f:[300,60],d:.15,n:.4},explosion:{n:1,lp:[2500,80],d:1},whoosh:{n:1,lp:[200,4000],d:.6},beep:{w:'sine',f:[880,880],d:.2},siren:{w:'sine',f:[600,1200],d:.8},blip:{w:'square',f:[1200,1200],d:.06}};
+Object.keys(SF).forEach(k=>$('#xk').add(new Option(k[0].toUpperCase()+k.slice(1),k)));
+$('#xp').oninput=()=>$('#xpl').textContent=(+$('#xp').value).toFixed(2);$('#xl').oninput=()=>$('#xll').textContent=(+$('#xl').value).toFixed(2);
+async function sfx(k,pi,le,rd){const P=SF[k],sr=44100,d=P.d*le,o=new OfflineAudioContext(1,Math.ceil(sr*d),sr),g=o.createGain(),r=()=>1+(rd?(Math.random()-.5)*.4:0);
+g.gain.setValueAtTime(0,0);g.gain.linearRampToValueAtTime(.8,.01);g.gain.exponentialRampToValueAtTime(.001,d);g.connect(o.destination);
+if(P.w){const s=o.createOscillator(),a=P.f[0]*pi*r(),b=P.f[1]*pi*r();s.type=P.w;
+if(P.s)P.s.forEach((m,i)=>s.frequency.setValueAtTime(a*m,d*i/P.s.length));else{s.frequency.setValueAtTime(a,0);s.frequency.exponentialRampToValueAtTime(b,d)}s.connect(g);s.start()}
+if(P.n){const nb=o.createBuffer(1,o.length,sr),x=nb.getChannelData(0);for(let i=0;i<x.length;i++)x[i]=(Math.random()*2-1)*P.n;const s=o.createBufferSource();s.buffer=nb;
+if(P.lp){const f=o.createBiquadFilter();f.type='lowpass';f.frequency.setValueAtTime(P.lp[0]*pi*r(),0);f.frequency.exponentialRampToValueAtTime(P.lp[1],d);s.connect(f);f.connect(g)}else s.connect(g);s.start()}
+return o.startRendering()}
+$('#xg').onclick=async()=>{const k=$('#xk').value;try{out($('#xo'),wav(await sfx(k,+$('#xp').value,+$('#xl').value,$('#xr').checked)),'sfx',k+'-'+Date.now().toString().slice(-4))}catch(x){toast('Failed: '+x.message)}};
+/* OGG */
+const CT=(()=>{const t=[];for(let i=0;i<256;i++){let c=i<<24;for(let k=0;k<8;k++)c=c&0x80000000?(c<<1)^0x4C11DB7:c<<1;t.push(c>>>0)}return t})();
+const crc=u=>{let c=0;for(let i=0;i<u.length;i++)c=((c<<8)^CT[((c>>>24)^u[i])&255])>>>0;return c};
+function page(flag,gran,ser,seq,pk){const segs=[];pk.forEach(p=>{let n=p.length;while(n>=255){segs.push(255);n-=255}segs.push(n)});const u=new Uint8Array(27+segs.length+pk.reduce((a,p)=>a+p.length,0)),v=new DataView(u.buffer);u.set([79,103,103,83,0,flag]);v.setUint32(6,gran%4294967296,true);v.setUint32(10,Math.floor(gran/4294967296),true);v.setUint32(14,ser,true);v.setUint32(18,seq,true);u[26]=segs.length;u.set(segs,27);let o=27+segs.length;pk.forEach(p=>{u.set(p,o);o+=p.length});v.setUint32(22,crc(u),true);return u}
+function oggFile(pk,ch,total){const PRE=312,ser=Math.floor(Math.random()*2147483647),head=new Uint8Array(19),hv=new DataView(head.buffer);head.set([79,112,117,115,72,101,97,100,1,ch]);hv.setUint16(10,PRE,true);hv.setUint32(12,48000,true);
+const vn=new TextEncoder().encode('AudioForge'),tg=new Uint8Array(16+vn.length);tg.set([79,112,117,115,84,97,103,115]);new DataView(tg.buffer).setUint32(8,vn.length,true);tg.set(vn,12);
+const parts=[page(2,0,ser,0,[head]),page(0,0,ser,1,[tg])];let seq=2,gran=PRE,grp=[],sc=0;const ns=p=>Math.floor(p.length/255)+1,fl=last=>{parts.push(page(last?4:0,last?Math.min(PRE+total,gran):gran,ser,seq++,grp));grp=[];sc=0};
+pk.forEach(([u,s])=>{if(grp.length&&(sc+ns(u)>250||grp.length>=25))fl(false);grp.push(u);sc+=ns(u);gran+=s});if(grp.length)fl(true);return new Blob(parts,{type:'audio/ogg'})}
+async function rs(buf,sr){if(buf.sampleRate===sr&&buf.numberOfChannels<=2)return buf;const o=new OfflineAudioContext(Math.min(2,buf.numberOfChannels),Math.ceil(buf.duration*sr),sr),s=o.createBufferSource();s.buffer=buf;s.connect(o.destination);s.start();return o.startRendering()}
+async function ogg(buf){if(!window.AudioEncoder||!window.AudioData)throw new Error('This browser cannot make OGG. Use Chrome, or choose WAV or MP3.');buf=await rs(buf,48000);const ch=buf.numberOfChannels,cfg={codec:'opus',sampleRate:48000,numberOfChannels:ch,bitrate:ch>1?96000:64000};
+if(!(await AudioEncoder.isConfigSupported(cfg)).supported)throw new Error('Opus encoding is not supported on this device');
+const pk=[],err=[],enc=new AudioEncoder({output:c=>{const u=new Uint8Array(c.byteLength);c.copyTo(u);pk.push([u,Math.round((c.duration||20000)*48/1000)])},error:e=>err.push(e)});enc.configure(cfg);const d=[];for(let i=0;i<ch;i++)d.push(buf.getChannelData(i));
+for(let i=0;i<buf.length;i+=960){const n=Math.min(960,buf.length-i),a=new Float32Array(n*ch);for(let c=0;c<ch;c++)a.set(d[c].subarray(i,i+n),c*n);const ad=new AudioData({format:'f32-planar',sampleRate:48000,numberOfFrames:n,numberOfChannels:ch,timestamp:Math.round(i/48*1000),data:a});enc.encode(ad);ad.close();while(enc.encodeQueueSize>40&&!err.length)await new Promise(r=>setTimeout(r,5));if(err.length)throw err[0]}
+await enc.flush();if(err.length)throw err[0];enc.close();return oggFile(pk,ch,buf.length)}
+async function mp3(buf){if(!window.lamejs)await new Promise((r,j)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js';s.onload=r;s.onerror=()=>j(new Error('Could not load the MP3 encoder. Check your internet.'));document.head.appendChild(s)});
+buf=await rs(buf,44100);const ch=Math.min(2,buf.numberOfChannels),enc=new lamejs.Mp3Encoder(ch,44100,128),cv=x=>{const o=new Int16Array(x.length);for(let i=0;i<x.length;i++){const v=Math.max(-1,Math.min(1,x[i]));o[i]=v<0?v*32768:v*32767}return o},L=cv(buf.getChannelData(0)),Rr=ch>1?cv(buf.getChannelData(1)):null,p=[];
+for(let i=0;i<L.length;i+=1152){const a=ch>1?enc.encodeBuffer(L.subarray(i,i+1152),Rr.subarray(i,i+1152)):enc.encodeBuffer(L.subarray(i,i+1152));if(a.length)p.push(new Uint8Array(a))}const e=enc.flush();if(e.length)p.push(new Uint8Array(e));return new Blob(p,{type:'audio/mpeg'})}
+let DG;
+function dlg(b,name){DG={b};$('#dn').value=name;$('#df').value=S.fmt||'wav';$('#dnote').textContent='';$('#dok').disabled=false;$('#dm').hidden=false;history.pushState({v:cur,dlg:1},'')}
+function closeDlg(){$('#dm').hidden=true;if(history.state&&history.state.dlg)history.back()}
+$('#dcx').onclick=closeDlg;$('#dm').onclick=e=>{if(e.target.id==='dm')closeDlg()};
+$('#dok').onclick=async()=>{const f=$('#df').value,n=($('#dn').value.trim()||'audio').replace(/[\\\/:*?"<>|]+/g,'_'),btn=$('#dok'),nt=$('#dnote');btn.disabled=true;nt.textContent='Converting...';
+try{let o;if(f==='wav'&&/wav/.test(DG.b.type))o=DG.b;else{const buf=await decode(DG.b);o=f==='wav'?wav(buf):f==='mp3'?await mp3(buf):await ogg(buf)}S.fmt=f;save();dl(o,n+'.'+f);closeDlg()}catch(x){nt.textContent='Failed: '+x.message;console.error(x)}btn.disabled=false};
+/* LIBRARY */
+let urls=[];
+async function renderLib(){const q=$('#lq').value.toLowerCase(),c=$('#lc').value,box=$('#ll');urls.forEach(URL.revokeObjectURL);urls=[];box.innerHTML='';
+const l=(await all()).filter(i=>(!c||i.cat===c)&&i.name.toLowerCase().includes(q)).sort((a,b)=>b.date-a.date);if(!l.length){box.innerHTML='<div class="note">Nothing here yet.</div>';return}
+l.forEach(i=>{const d=document.createElement('div'),t=document.createElement('b'),m=document.createElement('div'),a=document.createElement('audio'),r=document.createElement('div');t.textContent=i.name;m.className='note';m.textContent=i.cat+' | '+mmss(i.dur)+' | '+kb(i.size);a.controls=true;const u=URL.createObjectURL(i.blob);urls.push(u);a.src=u;
+[['Rename','bt s',async()=>{const n=prompt('New name',i.name);if(n&&n.trim()){i.name=n.trim();await put(i);renderLib()}}],['Download','bt s',()=>dlg(i.blob,i.name)],['Delete','bt r',async()=>{if(confirm('Delete "'+i.name+'"?')){await del(i.id);renderLib()}}]].forEach(([n,cl,f])=>{const b=document.createElement('button');b.className=cl;b.textContent=n;b.onclick=f;r.appendChild(b)});
+d.className='card';d.append(t,m,a,r);box.appendChild(d)})}
+$('#lq').oninput=renderLib;$('#lc').onchange=renderLib;
+$('#li').onchange=async e=>{for(const f of e.target.files)await addLib(f,f.name.replace(/\.\w+$/,''),'imported');e.target.value='';renderLib()};
+/* SETTINGS */
+async function storage(){let t='Not available in this browser.';try{const e=await navigator.storage.estimate(),n=(await all()).length;t=n+' files, using '+kb(e.usage)+' of about '+kb(e.quota)}catch{}$('#sto').textContent=t}
+function applySet(){document.documentElement.dataset.theme=S.theme;$('#st').value=S.theme;$('#sfm').value=S.fmt||'wav';$('#stts').value=S.tts}
+$('#st').onchange=()=>{S.theme=$('#st').value;save();applySet()};$('#sfm').onchange=()=>{S.fmt=$('#sfm').value;save()};$('#stts').oninput=()=>{S.tts=$('#stts').value.trim();save()};
+$('#sclr').onclick=async()=>{if(confirm('Delete every saved file in the library?')){await clr();storage();toast('Library cleared')}};
+if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
+applySet();show('home',1);
+</script></body></html>
