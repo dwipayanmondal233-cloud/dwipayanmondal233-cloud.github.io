@@ -369,3 +369,32 @@ body { touch-action: manipulation; -webkit-touch-callout: none; }
   #page-bar button { padding: 8px 12px; }
   #zoom-label { padding: 10px 14px; font-size: 14px; }
 }
+
+/* Smaller visible handles, but still easy to touch */
+.handle, #pivot-dot { overflow: visible; }
+
+.handle::before, #pivot-dot::before {
+  content: '';
+  position: absolute;
+  inset: -14px;          /* invisible touch area, 14px bigger on every side */
+}
+
+.handle {
+  width: 9px; height: 9px;
+  border-width: 1px;
+  opacity: 0.9;
+}
+.handle.round {
+  width: 11px; height: 11px;
+}
+#pivot-dot {
+  width: 11px; height: 11px;
+  border-width: 1.5px;
+}
+
+@media (pointer: coarse) {
+  .handle        { width: 10px; height: 10px; }
+  .handle.round  { width: 12px; height: 12px; }
+  #pivot-dot     { width: 12px; height: 12px; }
+  .handle::before, #pivot-dot::before { inset: -18px; }
+}
