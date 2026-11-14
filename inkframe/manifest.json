@@ -1,1 +1,14 @@
-{"id":"./","name":"Inkframe Studio","short_name":"Inkframe","description":"Vector and photo editor","start_url":"./","scope":"./","display":"standalone","background_color":"#131418","theme_color":"#131418","icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}
+{
+  "name": "Vector Studio",
+  "short_name": "VectorStudio",
+  "description": "2D vector art and animation studio for game assets",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1e1e1e",
+  "theme_color": "#2a2a2a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
