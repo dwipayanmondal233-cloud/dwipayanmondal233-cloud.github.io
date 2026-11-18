@@ -762,40 +762,36 @@ tools.select.onMouseUp = function (event) {
   toggleCandidate = false;
 };
 
-// ----- Rectangle (FIXED: reads radius live from slider, clamps, live-updates) -----
+// ----- Rectangle (FIXED: clamped + rebuilt on mouse-up) -----
 let currentShape = null;
 let startPoint = null;
 let rectEnd = null;
 
-// Find the radius slider ONCE, tolerating any of the common ids.
-const rectRadiusEl =
-  document.getElementById('rect-radius') ||
-  document.getElementById('corner-radius') ||
-  document.getElementById('radius');
+function drawRectShape() {
+  if (currentShape) currentShape.remove();
 
-function getRectRadius(w, h) {
-  const raw = rectRadiusEl ? Number(rectRadiusEl.value) : 0;
-  // Clamp: Paper.js can only round up to half the shorter side.
-  return Math.max(0, Math.min(raw || 0, w / 2, h / 2));
-}
+  const from = startPoint;
+  const to = rectEnd;
+  if (!from || !to) { currentShape = null; return; }
 
-function buildRect(from, to) {
   const w = Math.abs(to.x - from.x);
   const h = Math.abs(to.y - from.y);
-  if (w < 0.5 || h < 0.5) return null;
-  return new paper.Path.Rectangle({
+  if (w < 0.5 || h < 0.5) { currentShape = null; return; }
+
+  // Clamp the radius so Paper.js can actually round the corners:
+  // it must not exceed half of the shorter side.
+  const radiusEl = document.getElementById('rect-radius');
+  let r = radiusEl ? (Number(radiusEl.value) || 0) : 0;
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+
+  currentShape = new paper.Path.Rectangle({
     from: from,
     to: to,
-    radius: getRectRadius(w, h),
+    radius: r,
     fillColor: style.fill,
     strokeColor: style.stroke,
     strokeWidth: style.strokeWidth
   });
-}
-
-function drawRectShape() {
-  if (currentShape) currentShape.remove();
-  currentShape = buildRect(startPoint, rectEnd);
 }
 
 tools.rect.onMouseDown = function (event) {
@@ -809,7 +805,9 @@ tools.rect.onMouseDrag = function (event) {
 };
 
 tools.rect.onMouseUp = function () {
-  drawRectShape();               // rebuild with final pointer position
+  // Rebuild with the final pointer position so the committed shape
+  // has the correct size (and therefore the correct rounded corners).
+  drawRectShape();
   if (currentShape) {
     registerItem(currentShape, 'Rectangle', '▭');
     saveState();
@@ -820,47 +818,6 @@ tools.rect.onMouseUp = function () {
   renderLayers();
 };
 
-// ----- Live-update radius on the selected rectangle(s) -----
-// Paper.js Path.Rectangle supports item.radius (number or Size). We rebuild
-// the path's segments when the slider moves so the corners actually change.
-function applyRadiusToSelection() {
-  if (!selection.length) return;
-  selection.forEach(function (item) {
-    if (item.className !== 'Path') return;
-    // Only true rectangles (4 segments) get rounded.
-    if (item.segments.length !== 4) return;
-    const b = item.bounds;
-    const r = getRectRadius(b.width, b.height);
-
-    // Rebuild as a fresh rounded rectangle at the same place, keeping style.
-    const fresh = new paper.Path.Rectangle({
-      rectangle: b,
-      radius: r,
-      fillColor: item.fillColor,
-      strokeColor: item.strokeColor,
-      strokeWidth: item.strokeWidth
-    });
-    fresh.name = item.name;
-    fresh.data = item.data;
-    fresh.opacity = item.opacity;
-    fresh.blendMode = item.blendMode;
-    fresh.insertAbove(item);
-    const idx = selection.indexOf(item);
-    if (idx >= 0) selection[idx] = fresh;
-    if (selectedItem === item) selectedItem = fresh;
-    item.remove();
-  });
-  paper.view.update();
-}
-
-if (rectRadiusEl) {
-  rectRadiusEl.addEventListener('input', function () {
-    applyRadiusToSelection();
-  });
-  rectRadiusEl.addEventListener('change', function () {
-    if (selection.length) saveState();
-  });
-}
 // ----- Circle -----
 tools.circle.onMouseDown = function (event) { startPoint = event.point; };
 
@@ -1101,6 +1058,86 @@ opacityInput.addEventListener('input', function () {
 
 blendSel.addEventListener('change', function () {
   selection.forEach(function (i) { i.blendMode = blendSel.value; });
+  if (selection.length) saveState();
+});
+
+// ======================================================
+// ROUND CORNERS + STROKE JOIN
+// ======================================================
+const cornerInput = document.getElementById('corner-radius');
+const cornerLabel = document.getElementById('corner-label');
+const joinSel = document.getElementById('stroke-join');
+
+function roundPathCorners(path, radius) {
+  const segs = path.segments;
+  const n = segs.length;
+  if (n < 3) return false;
+  const out = [];
+  let changed = false;
+
+  for (let i = 0; i < n; i++) {
+    const seg = segs[i];
+    const isEnd = !path.closed && (i === 0 || i === n - 1);
+    const sharp = seg.handleIn.isZero() && seg.handleOut.isZero();
+    if (isEnd || !sharp) {
+      out.push(new paper.Segment(seg.point, seg.handleIn, seg.handleOut));
+      continue;
+    }
+    const p = seg.point;
+    const prev = segs[(i - 1 + n) % n].point;
+    const next = segs[(i + 1) % n].point;
+    const v1 = prev.subtract(p), v2 = next.subtract(p);
+    const l1 = v1.length, l2 = v2.length;
+    if (l1 < 0.001 || l2 < 0.001) {
+      out.push(new paper.Segment(seg.point));
+      continue;
+    }
+    const r = Math.min(radius, l1 / 2, l2 / 2);
+    const a = p.add(v1.normalize(r));
+    const b = p.add(v2.normalize(r));
+    const k = 0.552;
+    out.push(new paper.Segment(a, null, p.subtract(a).multiply(k)));
+    out.push(new paper.Segment(b, p.subtract(b).multiply(k), null));
+    changed = true;
+  }
+  if (changed) path.segments = out;
+  return changed;
+}
+
+function roundItem(item, radius) {
+  if (item.className === 'Group' || item.className === 'CompoundPath') {
+    let any = false;
+    item.children.forEach(function (c) { if (roundItem(c, radius)) any = true; });
+    return any;
+  }
+  if (item.className === 'Path') return roundPathCorners(item, radius);
+  return false;
+}
+
+cornerInput.addEventListener('input', function () {
+  cornerLabel.textContent = cornerInput.value + ' px';
+});
+
+cornerInput.addEventListener('change', function () {
+  const r = Number(cornerInput.value) || 0;
+  let changed = false;
+  if (r > 0) {
+    selection.forEach(function (i) { if (roundItem(i, r)) changed = true; });
+  }
+  if (changed) saveState();
+  else if (r > 0 && selection.length) {
+    alert('No sharp corners found on the selected shape(s).');
+  }
+  cornerInput.value = 0;
+  cornerLabel.textContent = '0 px';
+});
+
+joinSel.addEventListener('change', function () {
+  function setJoin(i) {
+    if (i.className === 'Group' || i.className === 'CompoundPath') i.children.forEach(setJoin);
+    else i.strokeJoin = joinSel.value;
+  }
+  selection.forEach(setJoin);
   if (selection.length) saveState();
 });
 
