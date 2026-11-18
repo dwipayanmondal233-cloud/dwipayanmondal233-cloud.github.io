@@ -762,36 +762,40 @@ tools.select.onMouseUp = function (event) {
   toggleCandidate = false;
 };
 
-// ----- Rectangle (FIXED: clamped + rebuilt on mouse-up) -----
+// ----- Rectangle (FIXED: reads radius live from slider, clamps, live-updates) -----
 let currentShape = null;
 let startPoint = null;
 let rectEnd = null;
 
-function drawRectShape() {
-  if (currentShape) currentShape.remove();
+// Find the radius slider ONCE, tolerating any of the common ids.
+const rectRadiusEl =
+  document.getElementById('rect-radius') ||
+  document.getElementById('corner-radius') ||
+  document.getElementById('radius');
 
-  const from = startPoint;
-  const to = rectEnd;
-  if (!from || !to) { currentShape = null; return; }
+function getRectRadius(w, h) {
+  const raw = rectRadiusEl ? Number(rectRadiusEl.value) : 0;
+  // Clamp: Paper.js can only round up to half the shorter side.
+  return Math.max(0, Math.min(raw || 0, w / 2, h / 2));
+}
 
+function buildRect(from, to) {
   const w = Math.abs(to.x - from.x);
   const h = Math.abs(to.y - from.y);
-  if (w < 0.5 || h < 0.5) { currentShape = null; return; }
-
-  // Clamp the radius so Paper.js can actually round the corners:
-  // it must not exceed half of the shorter side.
-  const radiusEl = document.getElementById('rect-radius');
-  let r = radiusEl ? (Number(radiusEl.value) || 0) : 0;
-  r = Math.max(0, Math.min(r, w / 2, h / 2));
-
-  currentShape = new paper.Path.Rectangle({
+  if (w < 0.5 || h < 0.5) return null;
+  return new paper.Path.Rectangle({
     from: from,
     to: to,
-    radius: r,
+    radius: getRectRadius(w, h),
     fillColor: style.fill,
     strokeColor: style.stroke,
     strokeWidth: style.strokeWidth
   });
+}
+
+function drawRectShape() {
+  if (currentShape) currentShape.remove();
+  currentShape = buildRect(startPoint, rectEnd);
 }
 
 tools.rect.onMouseDown = function (event) {
@@ -805,9 +809,7 @@ tools.rect.onMouseDrag = function (event) {
 };
 
 tools.rect.onMouseUp = function () {
-  // Rebuild with the final pointer position so the committed shape
-  // has the correct size (and therefore the correct rounded corners).
-  drawRectShape();
+  drawRectShape();               // rebuild with final pointer position
   if (currentShape) {
     registerItem(currentShape, 'Rectangle', '▭');
     saveState();
@@ -818,6 +820,47 @@ tools.rect.onMouseUp = function () {
   renderLayers();
 };
 
+// ----- Live-update radius on the selected rectangle(s) -----
+// Paper.js Path.Rectangle supports item.radius (number or Size). We rebuild
+// the path's segments when the slider moves so the corners actually change.
+function applyRadiusToSelection() {
+  if (!selection.length) return;
+  selection.forEach(function (item) {
+    if (item.className !== 'Path') return;
+    // Only true rectangles (4 segments) get rounded.
+    if (item.segments.length !== 4) return;
+    const b = item.bounds;
+    const r = getRectRadius(b.width, b.height);
+
+    // Rebuild as a fresh rounded rectangle at the same place, keeping style.
+    const fresh = new paper.Path.Rectangle({
+      rectangle: b,
+      radius: r,
+      fillColor: item.fillColor,
+      strokeColor: item.strokeColor,
+      strokeWidth: item.strokeWidth
+    });
+    fresh.name = item.name;
+    fresh.data = item.data;
+    fresh.opacity = item.opacity;
+    fresh.blendMode = item.blendMode;
+    fresh.insertAbove(item);
+    const idx = selection.indexOf(item);
+    if (idx >= 0) selection[idx] = fresh;
+    if (selectedItem === item) selectedItem = fresh;
+    item.remove();
+  });
+  paper.view.update();
+}
+
+if (rectRadiusEl) {
+  rectRadiusEl.addEventListener('input', function () {
+    applyRadiusToSelection();
+  });
+  rectRadiusEl.addEventListener('change', function () {
+    if (selection.length) saveState();
+  });
+}
 // ----- Circle -----
 tools.circle.onMouseDown = function (event) { startPoint = event.point; };
 
