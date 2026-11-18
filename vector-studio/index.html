@@ -161,6 +161,19 @@
           <label class="prop-row">Blur <span id="blur-label">0 px</span>
             <input type="range" id="blur" min="0" max="50" value="0">
           </label>
+
+          <h3 class="section-title">Round edges</h3>
+          <label class="prop-row">Round corners <span id="corner-label">0 px</span>
+            <input type="range" id="corner-radius" min="0" max="200" value="0">
+          </label>
+          <label class="prop-row">Stroke corners
+            <select id="stroke-join">
+              <option value="miter">Sharp</option>
+              <option value="round">Round</option>
+              <option value="bevel">Bevel</option>
+            </select>
+          </label>
+          <p class="hint">Select a shape, then drag Round corners. Release to apply. Drag again to round more. Ctrl+Z undoes it.</p>
         </div>
 
         <!-- TAB: Tools -->
@@ -189,6 +202,11 @@
               <option value="cut">Cut shapes</option>
               <option value="object">Delete whole object</option>
             </select>
+          </label>
+
+          <h3 class="section-title">Rectangle</h3>
+          <label class="prop-row">Corner radius px
+            <input type="number" id="rect-radius" value="0" min="0" max="500">
           </label>
 
           <h3 class="section-title">Star &amp; spray</h3>

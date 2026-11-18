@@ -773,6 +773,7 @@ tools.rect.onMouseDrag = function (event) {
   currentShape = new paper.Path.Rectangle({
     from: startPoint,
     to: event.point,
+    radius: Number(document.getElementById('rect-radius').value) || 0,
     fillColor: style.fill,
     strokeColor: style.stroke,
     strokeWidth: style.strokeWidth
@@ -4254,6 +4255,106 @@ tlCanvas.addEventListener('pointermove', function (e) {
   const r = tlScroll.getBoundingClientRect();
   if (e.clientX > r.right - 30) tlScroll.scrollLeft += 12;
   else if (e.clientX < r.left + TL.LW + 30) tlScroll.scrollLeft -= 12;
+});
+
+// ======================================================
+// MILESTONE 16: ROUND EDGES
+// ======================================================
+const cornerInput = document.getElementById('corner-radius');
+const cornerLabel = document.getElementById('corner-label');
+const joinSel = document.getElementById('stroke-join');
+
+let cornerBase = null; // original points, saved when you start dragging
+
+function collectPaths(item, out) {
+  if (item.className === 'Path') out.push(item);
+  else if (item.className === 'CompoundPath' || item.className === 'Group') {
+    item.children.forEach(function (c) { collectPaths(c, out); });
+  }
+}
+
+function snapshotSegs(path) {
+  return path.segments.map(function (s) {
+    return {
+      p: s.point.clone(),
+      hi: s.handleIn.clone(),
+      ho: s.handleOut.clone()
+    };
+  });
+}
+
+function roundedSegs(base, closed, r) {
+  const n = base.length;
+  const out = [];
+  const flat = function (h) { return h.length < 0.001; };
+
+  for (let i = 0; i < n; i++) {
+    const s = base[i];
+    const prev = base[(i - 1 + n) % n];
+    const next = base[(i + 1) % n];
+    const inside = closed || (i > 0 && i < n - 1);
+    const canRound = inside && n >= 3 && r > 0 &&
+      flat(s.hi) && flat(s.ho) && flat(prev.ho) && flat(next.hi);
+
+    if (!canRound) { out.push(s); continue; }
+
+    const to1 = prev.p.subtract(s.p);
+    const to2 = next.p.subtract(s.p);
+    const l1 = to1.length, l2 = to2.length;
+    if (l1 < 0.01 || l2 < 0.01) { out.push(s); continue; }
+
+    const d = Math.min(r, l1 / 2, l2 / 2);
+    const v1 = to1.divide(l1), v2 = to2.divide(l2);
+    const A = s.p.add(v1.multiply(d));
+    const B = s.p.add(v2.multiply(d));
+    const k = d * 0.5523;
+
+    out.push({ p: A, hi: new paper.Point(0, 0), ho: v1.multiply(-k) });
+    out.push({ p: B, hi: v2.multiply(-k), ho: new paper.Point(0, 0) });
+  }
+  return out;
+}
+
+function applyRounding(radius) {
+  if (!cornerBase) {
+    cornerBase = new Map();
+    const list = [];
+    selection.forEach(function (i) { collectPaths(i, list); });
+    list.forEach(function (p) { cornerBase.set(p, snapshotSegs(p)); });
+  }
+  cornerBase.forEach(function (base, path) {
+    if (!path.parent) return;
+    const segs = roundedSegs(base, path.closed, radius);
+    path.removeSegments();
+    path.addSegments(segs.map(function (o) {
+      return new paper.Segment(o.p, o.hi, o.ho);
+    }));
+  });
+}
+
+cornerInput.addEventListener('input', function () {
+  const r = Number(cornerInput.value) || 0;
+  cornerLabel.textContent = r + ' px';
+  if (!selection.length) return;
+  applyRounding(r);
+});
+
+cornerInput.addEventListener('change', function () {
+  const had = cornerBase && cornerBase.size > 0;
+  cornerBase = null;
+  cornerInput.value = 0;           // ready for the next round
+  cornerLabel.textContent = '0 px';
+  if (had) saveState();
+});
+
+joinSel.addEventListener('change', function () {
+  selection.forEach(function (i) {
+    const list = [];
+    collectPaths(i, list);
+    if (i.className === 'CompoundPath') i.strokeJoin = joinSel.value;
+    list.forEach(function (p) { p.strokeJoin = joinSel.value; });
+  });
+  if (selection.length) saveState();
 });
 
 // ======================================================
