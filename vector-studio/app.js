@@ -89,6 +89,10 @@ function syncPanelFromItem(item) {
   const b = Number(item.data && item.data.blur) || 0;
   blurInput.value = b;
   blurLabel.textContent = b + ' px';
+
+  const cr = getCornerR(item);
+  document.getElementById('corner-radius').value = cr;
+  document.getElementById('corner-label').textContent = cr + ' px';
 }
 
 // Build the fill for one item from the panel settings
@@ -1062,79 +1066,85 @@ blendSel.addEventListener('change', function () {
 });
 
 // ======================================================
-// ROUND CORNERS + STROKE JOIN
+// ROUND CORNERS (live, non-destructive) + STROKE JOIN
 // ======================================================
 const cornerInput = document.getElementById('corner-radius');
 const cornerLabel = document.getElementById('corner-label');
 const joinSel = document.getElementById('stroke-join');
 
-function roundPathCorners(path, radius) {
-  const segs = path.segments;
-  const n = segs.length;
-  if (n < 3) return false;
+function applyCornerToPath(path, radius) {
+  if (path.className !== 'Path') return false;
+  if (!path.data) path.data = {};
+  // Remember the original (sharp) geometry the first time
+  if (!path.data.origSegs) {
+    path.data.origSegs = path.segments.map(function (s) {
+      return [s.point.x, s.point.y, s.handleIn.x, s.handleIn.y, s.handleOut.x, s.handleOut.y];
+    });
+  }
+  const o = path.data.origSegs;
+  const n = o.length;
+  const pt = function (i) { return new paper.Point(o[i][0], o[i][1]); };
   const out = [];
-  let changed = false;
 
   for (let i = 0; i < n; i++) {
-    const seg = segs[i];
+    const s = o[i];
     const isEnd = !path.closed && (i === 0 || i === n - 1);
-    const sharp = seg.handleIn.isZero() && seg.handleOut.isZero();
-    if (isEnd || !sharp) {
-      out.push(new paper.Segment(seg.point, seg.handleIn, seg.handleOut));
+    const sharp = !s[2] && !s[3] && !s[4] && !s[5];
+    if (radius <= 0 || n < 3 || isEnd || !sharp) {
+      out.push(new paper.Segment(pt(i),
+        new paper.Point(s[2], s[3]), new paper.Point(s[4], s[5])));
       continue;
     }
-    const p = seg.point;
-    const prev = segs[(i - 1 + n) % n].point;
-    const next = segs[(i + 1) % n].point;
+    const p = pt(i);
+    const prev = pt((i - 1 + n) % n);
+    const next = pt((i + 1) % n);
     const v1 = prev.subtract(p), v2 = next.subtract(p);
     const l1 = v1.length, l2 = v2.length;
-    if (l1 < 0.001 || l2 < 0.001) {
-      out.push(new paper.Segment(seg.point));
-      continue;
-    }
+    if (l1 < 0.001 || l2 < 0.001) { out.push(new paper.Segment(p)); continue; }
     const r = Math.min(radius, l1 / 2, l2 / 2);
     const a = p.add(v1.normalize(r));
     const b = p.add(v2.normalize(r));
     const k = 0.552;
     out.push(new paper.Segment(a, null, p.subtract(a).multiply(k)));
     out.push(new paper.Segment(b, p.subtract(b).multiply(k), null));
-    changed = true;
   }
-  if (changed) path.segments = out;
-  return changed;
+  path.segments = out;
+  path.data.cornerR = radius;
+  return true;
 }
 
-function roundItem(item, radius) {
+function applyCornerToItem(item, radius) {
   if (item.className === 'Group' || item.className === 'CompoundPath') {
     let any = false;
-    item.children.forEach(function (c) { if (roundItem(c, radius)) any = true; });
+    item.children.forEach(function (c) { if (applyCornerToItem(c, radius)) any = true; });
     return any;
   }
-  if (item.className === 'Path') return roundPathCorners(item, radius);
-  return false;
+  return applyCornerToPath(item, radius);
+}
+
+function getCornerR(item) {
+  if (!item) return 0;
+  if (item.children && item.children.length) return getCornerR(item.children[0]);
+  return Number(item.data && item.data.cornerR) || 0;
+}
+
+function clearRound(path) {            // call when the shape is edited by hand
+  if (path && path.data) { delete path.data.origSegs; delete path.data.cornerR; }
 }
 
 cornerInput.addEventListener('input', function () {
-  cornerLabel.textContent = cornerInput.value + ' px';
-});
-
-cornerInput.addEventListener('change', function () {
   const r = Number(cornerInput.value) || 0;
-  let changed = false;
-  if (r > 0) {
-    selection.forEach(function (i) { if (roundItem(i, r)) changed = true; });
-  }
-  if (changed) saveState();
-  else if (r > 0 && selection.length) {
-    alert('No sharp corners found on the selected shape(s).');
-  }
-  cornerInput.value = 0;
-  cornerLabel.textContent = '0 px';
+  cornerLabel.textContent = r + ' px';
+  selection.forEach(function (i) { applyCornerToItem(i, r); });
+  paper.view.update();
+});
+cornerInput.addEventListener('change', function () {
+  if (selection.length) saveState();
 });
 
 joinSel.addEventListener('change', function () {
   function setJoin(i) {
-    if (i.className === 'Group' || i.className === 'CompoundPath') i.children.forEach(setJoin);
+    if (i.children && i.children.length) i.children.forEach(setJoin);
     else i.strokeJoin = joinSel.value;
   }
   selection.forEach(setJoin);
@@ -1418,6 +1428,8 @@ function removeNode(seg) {
     alert('A path needs at least 2 points. Use Delete in the Select tool to remove the whole shape.');
     return false;
   }
+  
+  clearRound(path);
   seg.remove();
   nodeSel = null;
   path.fullySelected = true;
@@ -1429,6 +1441,7 @@ function addNodeAt(path, point) {
   if (!path || path.className !== 'Path') return null;
   const loc = path.getNearestLocation(point);
   if (!loc || loc.distance > 12) return null;
+  clearRound(path);
   const seg = path.divideAt(loc);
   if (!seg) return null;
   nodeSel = seg;
@@ -1479,7 +1492,10 @@ tools.node.onMouseDrag = function (event) {
 };
 
 tools.node.onMouseUp = function () {
-  if (nodeMoved) saveState();
+  if (nodeMoved) {
+    if (nodeHit && nodeHit.segment) clearRound(nodeHit.segment.path);
+    saveState();
+  }
   nodeHit = null;
   nodeMoved = false;
 };
@@ -2035,6 +2051,7 @@ function eraseAt(point) {
     result.insertAbove(item);
     result.name = item.name;
     result.data = item.data;
+    delete result.data.origSegs; delete result.data.cornerR;
     const idx = selection.indexOf(item);
     if (idx >= 0) selection[idx] = result;
     if (selectedItem === item) selectedItem = result;
@@ -2786,6 +2803,15 @@ function mxArr(m) { return [m.a, m.b, m.c, m.d, m.tx, m.ty]; }
         d.pivot = [c.x, c.y];
       }
       d.pose = mxArr(matrix.clone().append(mxFrom(d.pose)));
+        if (d.origSegs) {
+        const m0 = new paper.Matrix(matrix.a, matrix.b, matrix.c, matrix.d, 0, 0);
+        d.origSegs = d.origSegs.map(function (s) {
+          const p = matrix.transform(new paper.Point(s[0], s[1]));
+          const hi = m0.transform(new paper.Point(s[2], s[3]));
+          const ho = m0.transform(new paper.Point(s[4], s[5]));
+          return [p.x, p.y, hi.x, hi.y, ho.x, ho.y];
+        });
+      }
       if (d.pivot) {
         const p = matrix.transform(new paper.Point(d.pivot[0], d.pivot[1]));
         d.pivot = [p.x, p.y];
