@@ -5,7 +5,7 @@ const style = { fill: '#2f6fed', stroke: '#000000', strokeWidth: 2 };
 
 // ---------- Property panel elements ----------
 const fillInput = document.getElementById('fill-color');
-const strokeInput = documenapplyBlurToSelectiont.getElementById('stroke-color');
+const strokeInput = document.getElementById('stroke-color');
 const widthInput = document.getElementById('stroke-width');
 const blurInput = document.getElementById('blur');
 const blurLabel = document.getElementById('blur-label');
