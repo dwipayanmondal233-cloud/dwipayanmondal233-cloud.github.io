@@ -5,7 +5,7 @@ const style = { fill: '#2f6fed', stroke: '#000000', strokeWidth: 2 };
 
 // ---------- Property panel elements ----------
 const fillInput = document.getElementById('fill-color');
-const strokeInput = document.getElementById('stroke-color');
+const strokeInput = documenapplyBlurToSelectiont.getElementById('stroke-color');
 const widthInput = document.getElementById('stroke-width');
 const blurInput = document.getElementById('blur');
 const blurLabel = document.getElementById('blur-label');
@@ -171,7 +171,8 @@ function applyBlurToSelection() {
   const px = Number(blurInput.value) || 0;
   blurLabel.textContent = px + ' px';
   selection.forEach(function (i) { applyBlurToItem(i, px); });
-  paper.view.update();
+  paper.project._needsUpdate = true;   // tell Paper.js the canvas is dirty
+  paper.view.update();                 // redraw right now
 }
 
 blurInput.addEventListener('input', applyBlurToSelection);
@@ -1149,6 +1150,68 @@ joinSel.addEventListener('change', function () {
   }
   selection.forEach(setJoin);
   if (selection.length) saveState();
+});
+
+// ======================================================
+// STROKE STYLE: line ends + dash patterns
+// ======================================================
+const capSel = document.getElementById('stroke-cap');
+const dashSel = document.getElementById('stroke-dash');
+
+function eachStrokeLeaf(item, fn) {
+  if (item.className === 'Group') {
+    item.children.forEach(function (c) { eachStrokeLeaf(c, fn); });
+  } else {
+    fn(item);
+  }
+}
+
+function dashArrayFor(kind, width) {
+  const w = Math.max(width || 1, 1);
+  if (kind === 'dashed')  return [w * 4, w * 2.5];
+  if (kind === 'long')    return [w * 8, w * 3];
+  if (kind === 'dotted')  return [0.01, w * 2];
+  if (kind === 'dashdot') return [w * 4, w * 2, 0.01, w * 2];
+  return [];
+}
+
+function applyDash(leaf) {
+  const kind = (leaf.data && leaf.data.dash) || 'solid';
+  leaf.dashArray = dashArrayFor(kind, leaf.strokeWidth);
+  if (kind === 'dotted' || kind === 'dashdot') leaf.strokeCap = 'round';
+}
+
+capSel.addEventListener('change', function () {
+  selection.forEach(function (i) {
+    eachStrokeLeaf(i, function (leaf) {
+      const kind = (leaf.data && leaf.data.dash) || 'solid';
+      leaf.strokeCap = (kind === 'dotted' || kind === 'dashdot') ? 'round' : capSel.value;
+    });
+  });
+  if (selection.length) saveState();
+});
+
+dashSel.addEventListener('change', function () {
+  selection.forEach(function (i) {
+    eachStrokeLeaf(i, function (leaf) {
+      leaf.data.dash = dashSel.value;
+      applyDash(leaf);
+    });
+  });
+  if (selection.length) {
+    const first = selection[0];
+    eachStrokeLeaf(first, function (leaf) { capSel.value = leaf.strokeCap || 'butt'; });
+    saveState();
+  }
+});
+
+// keep dashes in proportion when the stroke width changes
+widthInput.addEventListener('input', function () {
+  selection.forEach(function (i) {
+    eachStrokeLeaf(i, function (leaf) {
+      if (leaf.data && leaf.data.dash && leaf.data.dash !== 'solid') applyDash(leaf);
+    });
+  });
 });
 
 [fillInput, fill2Input, gradAngleInput, fillOpInput, strokeInput,
