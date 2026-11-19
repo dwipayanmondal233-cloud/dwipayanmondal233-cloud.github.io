@@ -1287,6 +1287,114 @@ window.addEventListener('mouseup', function () {
 // ---------- END PAN LISTENERS ----------
 
 // ======================================================
+// TOUCH SUPPORT: pinch zoom, 2-finger pan, hand mode, touch buttons
+// ======================================================
+canvasEl.style.touchAction = 'none';
+canvasArea.style.touchAction = 'none';
+document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+
+function zoomAtView(px, py, factor) {
+  const view = paper.view;
+  const mp = view.viewToProject(new paper.Point(px, py));
+  const nz = Math.min(20, Math.max(0.1, view.zoom * factor));
+  const beta = view.zoom / nz;
+  const pc = mp.subtract(view.center);
+  const off = mp.subtract(pc.multiply(beta)).subtract(view.center);
+  view.zoom = nz;
+  view.center = view.center.add(off);
+  updateZoomLabel();
+}
+
+let handOn = false, shiftOn = false;
+let gesture = null, toolTouchActive = false, tStartHistory = 0;
+
+function touchInfo(e) {
+  const r = canvasEl.getBoundingClientRect();
+  const a = e.touches[0], b = e.touches[1];
+  if (b) {
+    return {
+      x: (a.clientX + b.clientX) / 2 - r.left,
+      y: (a.clientY + b.clientY) / 2 - r.top,
+      d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+    };
+  }
+  return { x: a.clientX - r.left, y: a.clientY - r.top, d: 0 };
+}
+
+// A second finger arrived after the tool already started: cancel that stroke
+function cancelToolTouch(t) {
+  document.dispatchEvent(new MouseEvent('mouseup', {
+    bubbles: true, clientX: t.clientX, clientY: t.clientY
+  }));
+  if (historyIndex > tStartHistory) undo();
+  toolTouchActive = false;
+}
+
+canvasArea.addEventListener('touchstart', function (e) {
+  if (e.target !== canvasEl) return;           // handles / buttons work normally
+  if (e.touches.length >= 2 || handOn) {
+    if (toolTouchActive) cancelToolTouch(e.touches[0]);
+    e.preventDefault();
+    e.stopPropagation();
+    gesture = touchInfo(e);
+    return;
+  }
+  toolTouchActive = true;
+  tStartHistory = historyIndex;
+}, true);
+
+canvasArea.addEventListener('touchmove', function (e) {
+  if (e.target !== canvasEl) return;
+  if (gesture) {
+    e.preventDefault();
+    e.stopPropagation();
+    const now = touchInfo(e);
+    if (now.d && gesture.d) zoomAtView(now.x, now.y, now.d / gesture.d);
+    const move = new paper.Point(now.x - gesture.x, now.y - gesture.y).divide(paper.view.zoom);
+    paper.view.center = paper.view.center.subtract(move);
+    gesture = now;
+    return;
+  }
+  if (toolTouchActive) e.preventDefault();
+}, { capture: true, passive: false });
+
+function endTouch(e) {
+  if (gesture) {
+    e.stopPropagation();
+    gesture = e.touches.length ? touchInfo(e) : null;
+    if (!e.touches.length) toolTouchActive = false;
+    return;
+  }
+  if (!e.touches.length) toolTouchActive = false;
+}
+canvasArea.addEventListener('touchend', endTouch, true);
+canvasArea.addEventListener('touchcancel', endTouch, true);
+
+// ----- Touch bar buttons -----
+function flagBtn(id, setter) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('click', function () {
+    const on = !el.classList.contains('active');
+    el.classList.toggle('active', on);
+    setter(on);
+  });
+}
+flagBtn('tb-hand', function (on) {
+  handOn = on;
+  canvasEl.style.cursor = on ? 'grab' : '';
+});
+flagBtn('tb-shift', function (on) {
+  shiftOn = on;
+  paper.Key.modifiers.shift = on;     // acts like holding Shift
+});
+flagBtn('tb-rot', function (on) {
+  handleMode = on ? 'rotate' : 'scale';
+});
+wire('tb-done', finishPen);
+wire('tb-del', deleteObject);
+
+// ======================================================
 // KEYBOARD
 // ======================================================
 document.addEventListener('keydown', function (e) {
