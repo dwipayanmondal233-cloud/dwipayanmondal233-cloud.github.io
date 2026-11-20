@@ -4061,7 +4061,7 @@ document.addEventListener('keydown', function (e) {
   onionCv.id = 'onion-canvas';
   canvasArea.appendChild(onionCv);
 
-  // ---------- maths ----------
+   // ---------- maths ----------
   function easeT(t, kind) {
     switch (kind) {
       case 'linear': return t;
@@ -4079,23 +4079,139 @@ document.addEventListener('keydown', function (e) {
   }
   function poseOf(item) { return mxFrom(item.data && item.data.pose); }
 
+  // ----- what can be animated -----
+  function hasLook(item) {
+    return item.className === 'Path' || item.className === 'CompoundPath' ||
+           item.className === 'PointText' || item.className === 'Shape';
+  }
+  function morphable(item) { return item.className === 'Path' || item.className === 'CompoundPath'; }
+  function pathsOf(item) { return item.className === 'CompoundPath' ? item.children.slice() : [item]; }
+
+  // ----- colors -----
+  function colArr(c) {
+    if (!c || c.type === 'gradient') return null;
+    var r = c.type === 'rgb' ? c : c.convert('rgb');
+    return [r.red, r.green, r.blue, r.alpha == null ? 1 : r.alpha];
+  }
+  function readLook(item) {
+    if (!hasLook(item)) return null;
+    var f = item.fillColor;
+    var o = { look: 1, fc: null, fg: null, sc: colArr(item.strokeColor), lw: item.strokeWidth || 0 };
+    if (f && f.type === 'gradient') {
+      o.fg = f.gradient.stops.map(function (s) { return colArr(s.color); });
+    } else if (f) {
+      o.fc = colArr(f);
+    }
+    return o;
+  }
+  function lerpCol(a, b, t) {
+    if (!a && !b) return null;
+    var A = a || [b[0], b[1], b[2], 0], B = b || [a[0], a[1], a[2], 0];
+    return [0, 1, 2, 3].map(function (n) { return A[n] + (B[n] - A[n]) * t; });
+  }
+  function lerpStops(a, b, t) {
+    if (!a || !b || a.length !== b.length) return a;
+    return a.map(function (c, i) { return lerpCol(c, b[i], t); });
+  }
+  function applyLook(item, k) {
+    if (!k.look || !hasLook(item)) return;
+    var cc = function (a) { return new paper.Color(a[0], a[1], a[2], a[3]); };
+    var f = item.fillColor;
+    if (k.fg) {
+      if (f && f.type === 'gradient' && f.gradient.stops.length === k.fg.length) {
+        item.fillColor = {
+          gradient: { stops: k.fg.map(cc), radial: f.gradient.radial },
+          origin: f.origin, destination: f.destination
+        };
+      }
+    } else if (k.fc) {
+      item.fillColor = cc(k.fc);
+    } else if (f) {
+      item.fillColor = null;
+    }
+    item.strokeColor = k.sc ? cc(k.sc) : null;
+    item.strokeWidth = k.lw || 0;
+  }
+
+  // ----- shape (point positions) -----
+  function readShape(item) {
+    var inv = poseOf(item).inverted();
+    if (!inv) return null;
+    var m0 = new paper.Matrix(inv.a, inv.b, inv.c, inv.d, 0, 0);
+    return pathsOf(item).map(function (p) {
+      return p.segments.map(function (s) {
+        var pt = inv.transform(s.point), hi = m0.transform(s.handleIn), ho = m0.transform(s.handleOut);
+        return [pt.x, pt.y, hi.x, hi.y, ho.x, ho.y];
+      });
+    });
+  }
+  function sameShape(a, b, eps) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].length !== b[i].length) return false;
+      for (var j = 0; j < a[i].length; j++)
+        for (var n = 0; n < 6; n++)
+          if (Math.abs(a[i][j][n] - b[i][j][n]) > eps) return false;
+    }
+    return true;
+  }
+  function lerpShape(a, b, t) {
+    if (!a || !b) return a || b;
+    if (a.length !== b.length) return a;
+    for (var i = 0; i < a.length; i++) if (a[i].length !== b[i].length) return a;
+    return a.map(function (pa, i) {
+      return pa.map(function (sa, j) {
+        var sb = b[i][j];
+        return sa.map(function (v, n) { return v + (sb[n] - v) * t; });
+      });
+    });
+  }
+  function shapeOf(item, k) { return (k && k.shape) || (item.data && item.data.rest) || null; }
+  function writeShape(item, shape, M) {
+    var ps = pathsOf(item);
+    if (!shape || ps.length !== shape.length) return false;
+    var m0 = new paper.Matrix(M.a, M.b, M.c, M.d, 0, 0);
+    var P = function (s) { return M.transform(new paper.Point(s[0], s[1])); };
+    var HI = function (s) { return m0.transform(new paper.Point(s[2], s[3])); };
+    var HO = function (s) { return m0.transform(new paper.Point(s[4], s[5])); };
+    ps.forEach(function (p, i) {
+      var S = shape[i], segs = p.segments;
+      if (segs.length === S.length) {
+        for (var j = 0; j < S.length; j++) {
+          segs[j].point = P(S[j]);
+          segs[j].handleIn = HI(S[j]);
+          segs[j].handleOut = HO(S[j]);
+        }
+      } else {
+        p.segments = S.map(function (s) { return new paper.Segment(P(s), HI(s), HO(s)); });
+      }
+    });
+    return true;
+  }
+
+  // ----- keys -----
   function captureKey(item) {
     var M = poseOf(item), inv = M.inverted();
     var pv = getPivot(item);
     var q = inv ? inv.transform(pv) : pv;
-    var sx = Math.hypot(M.a, M.b);
-    var det = M.a * M.d - M.b * M.c;
-    return {
+    var sx = Math.hypot(M.a, M.b) || 1e-6;
+    var k = {
       x: pv.x, y: pv.y, qx: q.x, qy: q.y,
       r: Math.atan2(M.b, M.a) * 180 / Math.PI,
-      sx: sx, sy: sx ? det / sx : 1,
+      sx: sx,
+      sy: (M.a * M.d - M.b * M.c) / sx,
+      sh: (M.a * M.c + M.b * M.d) / sx,          // skew
       o: item.opacity, e: anim.ease,
       sw: item.data.swGroup ? item.data.swActive : null
     };
+    var look = readLook(item);
+    if (look) Object.assign(k, look);
+    if (morphable(item)) k.shape = readShape(item);
+    return k;
   }
   function buildPose(k) {
-    var rad = k.r * Math.PI / 180, c = Math.cos(rad), s = Math.sin(rad);
-    var a = c * k.sx, b = s * k.sx, cc = -s * k.sy, d = c * k.sy;
+    var rad = k.r * Math.PI / 180, c = Math.cos(rad), s = Math.sin(rad), sh = k.sh || 0;
+    var a = c * k.sx, b = s * k.sx, cc = c * sh - s * k.sy, d = s * sh + c * k.sy;
     return new paper.Matrix(a, b, cc, d, k.x - (a * k.qx + cc * k.qy), k.y - (b * k.qx + d * k.qy));
   }
   function framesOf(item) {
@@ -4113,18 +4229,38 @@ document.addEventListener('keydown', function (e) {
     var a = fr[i], b = fr[i + 1], A = ks[a], B = ks[b];
     var t = easeT((f - a) / (b - a), A.e);
     var L = function (p, q) { return p + (q - p) * t; };
-    return {
-      x: L(A.x, B.x), y: L(A.y, B.y), r: L(A.r, B.r), sx: L(A.sx, B.sx), sy: L(A.sy, B.sy),
+    var out = {
+      x: L(A.x, B.x), y: L(A.y, B.y), r: L(A.r, B.r),
+      sx: L(A.sx, B.sx), sy: L(A.sy, B.sy), sh: L(A.sh || 0, B.sh || 0),
       qx: L(A.qx, B.qx), qy: L(A.qy, B.qy),
       o: (A.o == null || B.o == null) ? A.o : L(A.o, B.o), sw: A.sw, e: A.e
     };
+    if (item.data.morph) out.shape = lerpShape(shapeOf(item, A), shapeOf(item, B), t);
+    if (A.look && B.look) {
+      out.look = 1;
+      out.lw = L(A.lw || 0, B.lw || 0);
+      out.sc = lerpCol(A.sc, B.sc, t);
+      if ((A.fg && !B.fg) || (!A.fg && B.fg)) { out.fc = A.fc; out.fg = A.fg; }   // gradient <-> solid: hold
+      else { out.fc = lerpCol(A.fc, B.fc, t); out.fg = lerpStops(A.fg, B.fg, t); }
+    } else if (A.look) {
+      out.look = 1; out.fc = A.fc; out.fg = A.fg; out.sc = A.sc; out.lw = A.lw;
+    }
+    return out;
   }
   function applyState(item, k) {
-    var M = buildPose(k), Pinv = poseOf(item).inverted();
-    if (Pinv) {
-      var D = M.clone().append(Pinv);
-      animating = true;
-      try { item.transform(D); } finally { animating = false; }
+    var M = buildPose(k), done = false;
+    var sh = k.shape || (item.data.morph ? item.data.rest : null);
+    if (sh && morphable(item)) {
+      done = writeShape(item, sh, M);
+      if (done && item.data.origSegs) { delete item.data.origSegs; delete item.data.cornerR; }
+    }
+    if (!done) {
+      var Pinv = poseOf(item).inverted();
+      if (Pinv) {
+        var D = M.clone().append(Pinv);
+        animating = true;
+        try { item.transform(D); } finally { animating = false; }
+      }
     }
     item.data.pose = mxArr(M);
     item.data.pivot = [k.x, k.y];
@@ -4133,6 +4269,7 @@ document.addEventListener('keydown', function (e) {
       item.data.swActive = k.sw;
       item.visible = (item.data.swIdx === k.sw);
     }
+    applyLook(item, k);
   }
   function applyFrame(f) {
     allTopItems().forEach(function (it) {
@@ -4164,6 +4301,11 @@ document.addEventListener('keydown', function (e) {
       if (!it.data) return;
       var ks = it.data.keys || (it.data.keys = {});
       var k = captureKey(it);
+      if (k.shape) {
+        if (!it.data.rest) it.data.rest = k.shape;                 // the first key defines the rest shape
+        if (sameShape(k.shape, it.data.rest, 0.05)) delete k.shape; // unchanged shape is not stored
+        else it.data.morph = true;
+      }
       if (ks[f] && ks[f].e) k.e = ks[f].e;
       var fr = framesOf(it).filter(function (x) { return x !== f; }), ref = null;
       fr.forEach(function (x) { if (x < f && (ref === null || x > ref)) ref = x; });
@@ -4185,35 +4327,40 @@ document.addEventListener('keydown', function (e) {
     commit(); tlDirty = true; renderOnion();
     say('Keyed every object at frame ' + curFrame);
   }
+  function forgetIfEmpty(it) {
+    if (it.data.keys && !Object.keys(it.data.keys).length) delete it.data.keys;
+    if (!it.data.keys) { delete it.data.rest; delete it.data.morph; }
+  }
   function doDelKey() {
     var any = false;
     keyTargets().forEach(function (it) {
       var ks = it.data.keys;
-      if (ks && ks[curFrame]) {
-        delete ks[curFrame]; any = true;
-        if (!Object.keys(ks).length) delete it.data.keys;
-      }
+      if (ks && ks[curFrame]) { delete ks[curFrame]; any = true; forgetIfEmpty(it); }
     });
     if (any) { applyFrame(curFrame); commit(); tlDirty = true; renderOnion(); }
   }
   function doClear() {
     var targets = keyTargets();
-    targets.forEach(function (it) { delete it.data.keys; });
+    targets.forEach(function (it) { delete it.data.keys; forgetIfEmpty(it); });
     if (targets.length) { commit(); tlDirty = true; renderOnion(); say('Keys cleared'); }
   }
   function copyKeys() {
     var clip = selection.map(function (it) {
       var k = it.data.keys && it.data.keys[curFrame];
-      return k ? JSON.parse(JSON.stringify(k)) : null;
+      return k ? { k: JSON.parse(JSON.stringify(k)), src: it } : null;
     });
-    if (!clip.some(function (k) { return k; })) { say('No key at this frame to copy'); return; }
+    if (!clip.some(function (c) { return c; })) { say('No key at this frame to copy'); return; }
     keyClip = clip; say('Key copied');
   }
   function pasteKeys() {
     if (!keyClip || !selection.length) { say('Copy a key first, then select objects'); return; }
     selection.forEach(function (it, i) {
-      var k = keyClip[i % keyClip.length];
-      if (k) { (it.data.keys || (it.data.keys = {}))[curFrame] = JSON.parse(JSON.stringify(k)); }
+      var c = keyClip[i % keyClip.length];
+      if (!c) return;
+      var k = JSON.parse(JSON.stringify(c.k));
+      if (k.shape && (c.src !== it || !it.data.rest)) delete k.shape;   // shapes only paste onto the same object
+      else if (k.shape) it.data.morph = true;
+      (it.data.keys || (it.data.keys = {}))[curFrame] = k;
     });
     applyFrame(curFrame); commit(); tlDirty = true; renderOnion();
   }
@@ -4557,19 +4704,40 @@ document.addEventListener('keydown', function (e) {
   }, true);
 
   // ---------- status text ----------
+  function currentDiffers(it) {
+    var ev = evalItem(it, curFrame), cu = captureKey(it);
+    if (!ev) return false;
+    var rd = Math.abs((((ev.r - cu.r) % 360) + 540) % 360 - 180);
+    if (Math.abs(ev.x - cu.x) > 0.5 || Math.abs(ev.y - cu.y) > 0.5 ||
+        Math.abs(ev.sx - cu.sx) > 0.01 || Math.abs(ev.sy - cu.sy) > 0.01 ||
+        Math.abs((ev.sh || 0) - (cu.sh || 0)) > 0.01 || rd > 0.5) return true;
+    if (ev.look && cu.look) {
+      var cd = function (a, b) {
+        if (!a && !b) return false;
+        if (!a || !b) return true;
+        for (var n = 0; n < 4; n++) if (Math.abs(a[n] - b[n]) > 0.01) return true;
+        return false;
+      };
+      if (cd(ev.fc, cu.fc) || cd(ev.sc, cu.sc) || Math.abs((ev.lw || 0) - (cu.lw || 0)) > 0.05) return true;
+      if (ev.fg && cu.fg && ev.fg.some(function (c, i) { return cd(c, cu.fg[i]); })) return true;
+    }
+    if (cu.shape) {
+      var es = ev.shape || shapeOf(it, ev);
+      if (es && !sameShape(es, cu.shape, 0.5)) return true;
+    }
+    return false;
+  }
+
   function updateStatus() {
     var msg = 'Frame ' + curFrame + ' / ' + (anim.length - 1);
     var it = selection.length ? topLevelItem(selection[0]) : null;
     if (it) {
       var ks = it.data.keys;
       if (!ks || !Object.keys(ks).length) msg += ' · no keys yet. Press ◆ Key (J)';
-      else if (ks[curFrame]) msg += ' · KEY';
       else {
-        var ev = evalItem(it, curFrame), cu = captureKey(it);
-        var rd = Math.abs((((ev.r - cu.r) % 360) + 540) % 360 - 180);
-        var diff = Math.abs(ev.x - cu.x) > 0.5 || Math.abs(ev.y - cu.y) > 0.5 ||
-          Math.abs(ev.sx - cu.sx) > 0.01 || Math.abs(ev.sy - cu.sy) > 0.01 || (180 - rd) > 0.5;
-        msg += diff ? ' · unkeyed change! Press ◆ Key (J) or it is lost' : ' · between keys';
+        var diff = currentDiffers(it);
+        if (ks[curFrame]) msg += diff ? ' · KEY (edited, press ◆ Key to update)' : ' · KEY';
+        else msg += diff ? ' · unkeyed change! Press ◆ Key (J) or it is lost' : ' · between keys';
       }
     }
     statusEl.textContent = msg;
