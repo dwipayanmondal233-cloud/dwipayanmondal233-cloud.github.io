@@ -93,6 +93,11 @@ function syncPanelFromItem(item) {
   const cr = getCornerR(item);
   document.getElementById('corner-radius').value = cr;
   document.getElementById('corner-label').textContent = cr + ' px';
+
+  let leaf = item;
+  while (leaf.className === 'Group' && leaf.children.length) leaf = leaf.children[0];
+  document.getElementById('stroke-cap').value = leaf.strokeCap || 'butt';
+  document.getElementById('stroke-dash').value = (leaf.data && leaf.data.dash) || 'solid';
 }
 
 // Build the fill for one item from the panel settings
@@ -166,13 +171,29 @@ function applyBlurToItem(item, px) {
   }
   item.data.blur = px;
 }
+function forceRedraw() {
+  paper.project._needsUpdate = true;
+  if (paper.view.requestUpdate) paper.view.requestUpdate();
+  paper.view.update();
+  requestAnimationFrame(function () {
+    paper.project._needsUpdate = true;
+    paper.view.update();
+  });
+}
 
 function applyBlurToSelection() {
   const px = Number(blurInput.value) || 0;
   blurLabel.textContent = px + ' px';
-  selection.forEach(function (i) { applyBlurToItem(i, px); });
-  paper.project._needsUpdate = true;   // tell Paper.js the canvas is dirty
-  paper.view.update();                 // redraw right now
+  if (!selection.length) {
+    if (window.toast) toast('Select a shape first (Select tool)');
+    return;
+  }
+  selection.forEach(function (i) {
+    applyBlurToItem(i, px);
+    // a real property change makes Paper.js mark the item dirty
+    const v = i.visible; i.visible = !v; i.visible = v;
+  });
+  forceRedraw();
 }
 
 blurInput.addEventListener('input', applyBlurToSelection);
@@ -3414,3 +3435,344 @@ wire('exp-download', doExport);
 
 saveFrame();
 syncExportSize(true);
+
+// ======================================================
+// COLOR PICKER (Inkscape style)
+// ======================================================
+const ColorPicker = (function () {
+  const st = { h: 210, s: 0.8, v: 0.9, a: 1 };
+  let anchor = null, cb = null, mode = 'RGB', opts = {}, startHex = '#000000', startA = 1;
+  const PALETTE = ['#000000','#434343','#666666','#999999','#cccccc','#ffffff','#ff0000','#ff6600',
+    '#ffcc00','#ffff00','#99cc00','#00aa00','#00cc99','#00ccff','#0066ff','#0000cc','#6600cc',
+    '#cc00cc','#ff0099','#990000','#cc6600','#996633','#663300','#336600','#003366','#330066',
+    '#ffcccc','#ffe5cc','#ffffcc','#ccffcc','#ccf2ff','#e5ccff'];
+
+  const pop = document.createElement('div');
+  pop.id = 'cp';
+  pop.innerHTML =
+    '<div id="cp-sv"><div id="cp-sv-dot"></div></div>' +
+    '<div class="cp-bar" id="cp-hue"><div class="cp-knob"></div></div>' +
+    '<div class="cp-bar" id="cp-alpha"><div id="cp-alpha-fill"></div><div class="cp-knob"></div></div>' +
+    '<div class="cp-top"><div id="cp-prev"><div id="cp-old"></div><div id="cp-new"></div></div>' +
+    '<input type="text" id="cp-hex" maxlength="9" spellcheck="false">' +
+    '<button id="cp-eye" title="Pick a color from the screen">💧</button>' +
+    '<button id="cp-none" title="None (transparent)">∅</button></div>' +
+    '<div class="cp-modes"></div><div id="cp-fields"></div>' +
+    '<div class="cp-lbl">Palette</div><div class="cp-sw" id="cp-pal"></div>' +
+    '<div class="cp-lbl">Recent</div><div class="cp-sw" id="cp-recent"></div>';
+  document.body.appendChild(pop);
+
+  const $ = function (s) { return pop.querySelector(s); };
+  const sv = $('#cp-sv'), svDot = $('#cp-sv-dot'), hueBar = $('#cp-hue'), alphaBar = $('#cp-alpha');
+  const hexEl = $('#cp-hex'), fieldsEl = $('#cp-fields');
+
+  // ---- color math ----
+  const clamp = function (x, a, b) { return Math.min(b, Math.max(a, x)); };
+  function hsv2rgb(h, s, v) {
+    const f = function (n) { const k = (n + h / 60) % 6; return v - v * s * Math.max(Math.min(k, 4 - k, 1), 0); };
+    return [f(5), f(3), f(1)].map(function (x) { return Math.round(x * 255); });
+  }
+  function rgb2hsv(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    let h = 0;
+    if (d) {
+      if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+      h *= 60; if (h < 0) h += 360;
+    }
+    return { h: h, s: mx ? d / mx : 0, v: mx, gray: d === 0 };
+  }
+  function rgb2hsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, l = (mx + mn) / 2;
+    return { s: d ? d / (1 - Math.abs(2 * l - 1)) : 0, l: l };
+  }
+  function hsl2rgb(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; } else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; } else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    return [r + m, g + m, b + m].map(function (t) { return Math.round(t * 255); });
+  }
+  const rgb = function () { return hsv2rgb(st.h, st.s, st.v); };
+  const hex2 = function (n) { return ('0' + n.toString(16)).slice(-2); };
+  const toHex = function () { return '#' + rgb().map(hex2).join(''); };
+  function setRGB(r, g, b, hueHint) {
+    const x = rgb2hsv(r, g, b);
+    st.h = x.gray ? (hueHint != null ? hueHint : st.h) : x.h;
+    st.s = x.s; st.v = x.v;
+  }
+  function parseHex(t) {
+    t = String(t).trim().replace('#', '');
+    if (t.length === 3 || t.length === 4) t = t.split('').map(function (c) { return c + c; }).join('');
+    if (!/^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(t)) return null;
+    return { r: parseInt(t.substr(0, 2), 16), g: parseInt(t.substr(2, 2), 16),
+             b: parseInt(t.substr(4, 2), 16), a: t.length === 8 ? parseInt(t.substr(6, 2), 16) / 255 : null };
+  }
+
+  // ---- numeric modes ----
+  const MODES = {
+    RGB:  { l: ['R', 'G', 'B'], max: [255, 255, 255],
+            to: function () { return rgb(); },
+            from: function (a) { setRGB(a[0], a[1], a[2]); } },
+    HSL:  { l: ['H', 'S', 'L'], max: [360, 100, 100],
+            to: function () { const x = rgb2hsl.apply(null, rgb()); return [Math.round(st.h), Math.round(x.s * 100), Math.round(x.l * 100)]; },
+            from: function (a) { const c = hsl2rgb(a[0], a[1] / 100, a[2] / 100); setRGB(c[0], c[1], c[2], a[0]); } },
+    HSV:  { l: ['H', 'S', 'V'], max: [360, 100, 100],
+            to: function () { return [Math.round(st.h), Math.round(st.s * 100), Math.round(st.v * 100)]; },
+            from: function (a) { st.h = a[0]; st.s = a[1] / 100; st.v = a[2] / 100; } },
+    CMYK: { l: ['C', 'M', 'Y', 'K'], max: [100, 100, 100, 100],
+            to: function () {
+              const c = rgb().map(function (x) { return x / 255; }), k = 1 - Math.max(c[0], c[1], c[2]);
+              if (k >= 1) return [0, 0, 0, 100];
+              return [(1 - c[0] - k) / (1 - k), (1 - c[1] - k) / (1 - k), (1 - c[2] - k) / (1 - k), k]
+                .map(function (x) { return Math.round(x * 100); });
+            },
+            from: function (a) {
+              const k = a[3] / 100;
+              setRGB(Math.round(255 * (1 - a[0] / 100) * (1 - k)),
+                     Math.round(255 * (1 - a[1] / 100) * (1 - k)),
+                     Math.round(255 * (1 - a[2] / 100) * (1 - k)));
+            } }
+  };
+
+  const modesEl = $('.cp-modes');
+  Object.keys(MODES).forEach(function (m) {
+    const b = document.createElement('button');
+    b.textContent = m; b.dataset.m = m;
+    b.addEventListener('click', function () { mode = m; buildFields(); update(); });
+    modesEl.appendChild(b);
+  });
+
+  function buildFields() {
+    const M = MODES[mode];
+    fieldsEl.innerHTML = '';
+    M.l.forEach(function (lab, i) {
+      const row = document.createElement('div');
+      row.className = 'cp-f';
+      row.innerHTML = '<b>' + lab + '</b><input type="range" min="0" max="' + M.max[i] + '"><input type="number" min="0" max="' + M.max[i] + '">';
+      const rng = row.children[1], num = row.children[2];
+      const apply = function (v) {
+        const vals = MODES[mode].to();
+        vals[i] = clamp(Number(v) || 0, 0, M.max[i]);
+        MODES[mode].from(vals);
+        update(); emit(false);
+      };
+      rng.addEventListener('input', function () { apply(rng.value); });
+      rng.addEventListener('change', function () { emit(true); });
+      num.addEventListener('input', function () { apply(num.value); });
+      num.addEventListener('change', function () { emit(true); });
+      fieldsEl.appendChild(row);
+    });
+    if (opts.alpha) {
+      const row = document.createElement('div');
+      row.className = 'cp-f';
+      row.innerHTML = '<b>A</b><input type="range" min="0" max="100"><input type="number" min="0" max="100">';
+      const rng = row.children[1], num = row.children[2];
+      const apply = function (v) { st.a = clamp(Number(v) || 0, 0, 100) / 100; update(); emit(false); };
+      rng.addEventListener('input', function () { apply(rng.value); });
+      rng.addEventListener('change', function () { emit(true); });
+      num.addEventListener('input', function () { apply(num.value); });
+      num.addEventListener('change', function () { emit(true); });
+      row.dataset.alpha = '1';
+      fieldsEl.appendChild(row);
+    }
+  }
+
+  // ---- redraw popup ----
+  function update() {
+    const r = rgb(), css = 'rgb(' + r.join(',') + ')';
+    sv.style.background = 'linear-gradient(to top,#000,transparent),linear-gradient(to right,#fff,hsl(' + st.h + ',100%,50%))';
+    svDot.style.left = (st.s * 100) + '%';
+    svDot.style.top = ((1 - st.v) * 100) + '%';
+    hueBar.querySelector('.cp-knob').style.left = (st.h / 360 * 100) + '%';
+    $('#cp-alpha-fill').style.background = 'linear-gradient(to right,rgba(' + r.join(',') + ',0),' + css + ')';
+    alphaBar.querySelector('.cp-knob').style.left = (st.a * 100) + '%';
+    alphaBar.style.display = opts.alpha ? 'block' : 'none';
+    $('#cp-new').style.background = 'rgba(' + r.join(',') + ',' + st.a + ')';
+    $('#cp-none').style.display = opts.onNone ? '' : 'none';
+    if (document.activeElement !== hexEl) {
+      hexEl.value = toHex() + (opts.alpha && st.a < 1 ? hex2(Math.round(st.a * 255)) : '');
+    }
+    const vals = MODES[mode].to();
+    const rows = fieldsEl.children;
+    for (let i = 0; i < vals.length; i++) {
+      if (document.activeElement !== rows[i].children[1]) rows[i].children[1].value = vals[i];
+      if (document.activeElement !== rows[i].children[2]) rows[i].children[2].value = vals[i];
+    }
+    if (opts.alpha && rows.length > vals.length) {
+      const ar = rows[vals.length], av = Math.round(st.a * 100);
+      if (document.activeElement !== ar.children[2]) ar.children[2].value = av;
+      ar.children[1].value = av;
+    }
+    modesEl.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b.dataset.m === mode); });
+  }
+
+  // ---- recent colors ----
+  function loadRecent() { try { return JSON.parse(localStorage.getItem('vs-recent') || '[]'); } catch (e) { return []; } }
+  function pushRecent(h) {
+    const list = loadRecent().filter(function (x) { return x !== h; });
+    list.unshift(h);
+    try { localStorage.setItem('vs-recent', JSON.stringify(list.slice(0, 16))); } catch (e) {}
+  }
+  function swatches(el, list) {
+    el.innerHTML = '';
+    list.forEach(function (c) {
+      const i = document.createElement('i');
+      i.style.background = c; i.title = c;
+      i.addEventListener('click', function () {
+        const p = parseHex(c);
+        setRGB(p.r, p.g, p.b); update(); emit(true);
+      });
+      el.appendChild(i);
+    });
+  }
+
+  // ---- send the color back ----
+  function emit(final) {
+    if (!cb) return;
+    const h = toHex();
+    cb(h, Math.round(st.a * 100), !!final);
+    if (final) { pushRecent(h); swatches($('#cp-recent'), loadRecent()); }
+  }
+
+  // ---- dragging (mouse, touch and pen) ----
+  function drag(el, fn) {
+    el.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      fn(e);
+      const up = function () {
+        el.removeEventListener('pointermove', fn);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        emit(true);
+      };
+      el.addEventListener('pointermove', fn);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    });
+  }
+  const frac = function (e, el, axis) {
+    const r = el.getBoundingClientRect();
+    return axis === 'x' ? clamp((e.clientX - r.left) / r.width, 0, 1) : clamp((e.clientY - r.top) / r.height, 0, 1);
+  };
+  drag(sv, function (e) { st.s = frac(e, sv, 'x'); st.v = 1 - frac(e, sv, 'y'); update(); emit(false); });
+  drag(hueBar, function (e) { st.h = frac(e, hueBar, 'x') * 360; update(); emit(false); });
+  drag(alphaBar, function (e) { st.a = frac(e, alphaBar, 'x'); update(); emit(false); });
+
+  hexEl.addEventListener('input', function () {
+    const p = parseHex(hexEl.value);
+    if (!p) return;
+    setRGB(p.r, p.g, p.b);
+    if (p.a != null && opts.alpha) st.a = p.a;
+    update(); emit(false);
+  });
+  hexEl.addEventListener('change', function () { hexEl.blur(); update(); emit(true); });
+
+  $('#cp-eye').addEventListener('click', function () {
+    if (!window.EyeDropper) {
+      if (window.toast) toast('Screen eyedropper not supported here. Use the 💧 tool on the canvas (I)');
+      return;
+    }
+    new EyeDropper().open().then(function (res) {
+      const p = parseHex(res.sRGBHex);
+      if (p) { setRGB(p.r, p.g, p.b); update(); emit(true); }
+    }).catch(function () {});
+  });
+  $('#cp-none').addEventListener('click', function () {
+    if (opts.onNone) opts.onNone();
+    close();
+  });
+
+  // ---- open / close ----
+  function open(el, hex, alphaPct, callback, options) {
+    anchor = el; cb = callback; opts = options || {};
+    const p = parseHex(hex) || { r: 0, g: 0, b: 0 };
+    setRGB(p.r, p.g, p.b);
+    st.a = clamp((alphaPct == null ? 100 : alphaPct) / 100, 0, 1);
+    startHex = toHex(); startA = st.a;
+    $('#cp-old').style.background = 'rgba(' + rgb().join(',') + ',' + st.a + ')';
+    swatches($('#cp-pal'), PALETTE);
+    swatches($('#cp-recent'), loadRecent());
+    buildFields();
+    pop.style.display = 'block';
+    update();
+    const r = el.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+    let left = r.left - w - 12;
+    if (left < 8) left = Math.min(window.innerWidth - w - 8, r.right + 12);
+    if (window.innerWidth < 520) left = (window.innerWidth - w) / 2;
+    pop.style.left = Math.max(8, left) + 'px';
+    pop.style.top = clamp(r.top - 20, 8, Math.max(8, window.innerHeight - h - 8)) + 'px';
+  }
+  function close() { pop.style.display = 'none'; anchor = null; cb = null; }
+
+  document.addEventListener('pointerdown', function (e) {
+    if (pop.style.display !== 'block') return;
+    if (pop.contains(e.target) || e.target === anchor) return;
+    close();
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && pop.style.display === 'block') close();
+  });
+
+  return { open: open, close: close };
+})();
+
+// ---- connect the picker to the panel swatches ----
+function hookColor(input, alphaInput, onNone) {
+  input.addEventListener('click', function (e) {
+    e.preventDefault();
+    ColorPicker.open(input, input.value, alphaInput ? Number(alphaInput.value) : 100,
+      function (hex, a, final) {
+        if (input === fillInput && fillTypeSel.value === 'none') fillTypeSel.value = 'solid';
+        input.value = hex;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        if (alphaInput) {
+          alphaInput.value = a;
+          alphaInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        if (final) input.dispatchEvent(new Event('change', { bubbles: true }));
+      },
+      { alpha: !!alphaInput, onNone: onNone });
+  });
+}
+hookColor(fillInput, fillOpInput, function () {
+  fillTypeSel.value = 'none';
+  fillTypeSel.dispatchEvent(new Event('change', { bubbles: true }));
+});
+hookColor(strokeInput, strokeOpInput, function () {
+  strokeOpInput.value = 0;
+  strokeOpInput.dispatchEvent(new Event('input', { bubbles: true }));
+  strokeOpInput.dispatchEvent(new Event('change', { bubbles: true }));
+});
+hookColor(fill2Input, null, null);
+
+// ---- swap fill and stroke ----
+wire('swap-colors', function () {
+  const f = fillInput.value, fo = fillOpInput.value;
+  const s = strokeInput.value, so = strokeOpInput.value;
+  fillTypeSel.value = 'solid';
+  fillInput.value = s; fillOpInput.value = so;
+  strokeInput.value = f; strokeOpInput.value = fo;
+  [fillInput, fillOpInput, strokeInput, strokeOpInput].forEach(function (el) {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  if (selection.length) saveState();
+});
+
+window.toast = function (msg) {
+  let t = document.getElementById('vs-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'vs-toast';
+    t.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);' +
+      'background:#000c;color:#fff;padding:8px 14px;border-radius:8px;font:14px sans-serif;' +
+      'z-index:99999;pointer-events:none;max-width:80vw;text-align:center';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._tm);
+  t._tm = setTimeout(function () { t.style.display = 'none'; }, 1800);
+};

@@ -403,3 +403,40 @@ button:active { filter: brightness(1.6); transform: scale(.94); }
 .tool-btn:active { background: #2f6fed; }
 #touch-bar button.active,
 #touch-bar button.on { background: #2f6fed; border-color: #fff; color: #fff; }
+
+/* ---------- Color picker ---------- */
+#cp{position:fixed;z-index:100000;width:264px;display:none;background:#2a2a2a;color:#ddd;
+  border:1px solid #555;border-radius:10px;padding:10px;box-shadow:0 8px 28px rgba(0,0,0,.6);
+  font:12px system-ui,sans-serif;user-select:none;touch-action:none}
+#cp *{box-sizing:border-box}
+#cp-sv{position:relative;height:150px;border-radius:6px;cursor:crosshair;touch-action:none;
+  border:1px solid #111}
+#cp-sv-dot{position:absolute;width:16px;height:16px;border-radius:50%;border:2px solid #fff;
+  box-shadow:0 0 0 1px #000;transform:translate(-50%,-50%);pointer-events:none}
+.cp-bar{position:relative;height:18px;border-radius:9px;margin-top:10px;border:1px solid #111;
+  touch-action:none;cursor:pointer}
+#cp-hue{background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
+#cp-alpha{background-color:#fff;background-image:linear-gradient(45deg,#bbb 25%,transparent 25%,transparent 75%,#bbb 75%),linear-gradient(45deg,#bbb 25%,transparent 25%,transparent 75%,#bbb 75%);background-size:10px 10px;background-position:0 0,5px 5px}
+#cp-alpha-fill{position:absolute;inset:0;border-radius:9px}
+.cp-knob{position:absolute;top:50%;width:20px;height:20px;border-radius:50%;background:#fff;
+  border:2px solid #333;transform:translate(-50%,-50%);pointer-events:none}
+.cp-top{display:flex;gap:8px;align-items:center;margin-top:10px}
+#cp-prev{width:46px;height:30px;border-radius:5px;border:1px solid #111;display:flex;overflow:hidden;flex-shrink:0}
+#cp-prev div{flex:1}
+#cp input[type=text]{flex:1;min-width:0;padding:6px;background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:4px;font-family:monospace}
+#cp button{background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:4px;padding:6px 9px;cursor:pointer}
+#cp button.on{background:#2f6fed;border-color:#2f6fed;color:#fff}
+.cp-modes{display:flex;gap:4px;margin-top:10px}
+.cp-modes button{flex:1;padding:5px 0}
+.cp-f{display:flex;align-items:center;gap:6px;margin-top:7px}
+.cp-f b{width:14px;color:#aaa}
+.cp-f input[type=range]{flex:1;min-width:0}
+.cp-f input[type=number]{width:54px;padding:4px;background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:4px}
+.cp-sw{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
+.cp-sw i{width:22px;height:22px;border-radius:4px;border:1px solid #111;cursor:pointer;flex-shrink:0}
+.cp-lbl{margin-top:10px;color:#888;font-size:11px}
+@media (pointer:coarse){
+  #cp{width:300px} #cp-sv{height:180px}
+  .cp-sw i{width:30px;height:30px}
+  .cp-f input[type=number]{height:34px} #cp button{padding:10px 12px}
+}
