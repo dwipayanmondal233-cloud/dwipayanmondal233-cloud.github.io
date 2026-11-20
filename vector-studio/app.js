@@ -4022,3 +4022,713 @@ document.addEventListener('keydown', function (e) {
           key === 'arrowup' ? -s : key === 'arrowdown' ? s : 0);
   }
 });
+
+// ======================================================
+// DAY 4: ANIMATION SYSTEM
+// ======================================================
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var say = function (m) { if (window.toast) window.toast(m); };
+  var tlScroll = $('tl-scroll'), tlCanvas = $('tl-canvas'), tlBar = $('tl-bar');
+  if (!tlScroll || !tlCanvas || !tlBar) return;
+
+  var anim = { length: 24, fps: 12, loop: true, onion: false, onB: 2, onA: 2, ease: 'smooth', auto: false };
+  var curFrame = 0, playing = false, playAcc = 0, applying = false;
+  var keyClip = null, tlDirty = true, tlRows = [], tlDrag = null, tlMode = null;
+  var TL = { labelW: 150, ruler: 26, row: 26, cell: 16 };
+
+  var tlFrame = $('tl-frame'), tlLength = $('tl-length'), tlFps = $('tl-fps'), tlEase = $('tl-ease');
+  var tlLoop = $('tl-loop'), tlOnion = $('tl-onion'), tlOnb = $('tl-onb'), tlOna = $('tl-ona');
+
+  // ---------- extra UI ----------
+  ['in:Ease in', 'out:Ease out', 'bounce:Bounce'].forEach(function (s) {
+    var p = s.split(':');
+    if (!tlEase.querySelector('option[value="' + p[0] + '"]')) {
+      var o = document.createElement('option'); o.value = p[0]; o.textContent = p[1]; tlEase.appendChild(o);
+    }
+  });
+  function addBtn(id, text, title) {
+    var b = document.createElement('button'); b.id = id; b.textContent = text; b.title = title;
+    tlBar.appendChild(b); return b;
+  }
+  var autoBtn = addBtn('tl-auto', '● Auto key', 'When on, every change to the selected objects is keyed at this frame');
+  addBtn('tl-zoom-out', '🔍−', 'Zoom the timeline out');
+  addBtn('tl-zoom-in', '🔍＋', 'Zoom the timeline in');
+  var statusEl = document.createElement('span'); statusEl.id = 'tl-status'; tlBar.appendChild(statusEl);
+  var tlSpace = document.createElement('div'); tlSpace.id = 'tl-space'; tlScroll.appendChild(tlSpace);
+
+  var onionCv = document.createElement('canvas');
+  onionCv.id = 'onion-canvas';
+  canvasArea.appendChild(onionCv);
+
+  // ---------- maths ----------
+  function easeT(t, kind) {
+    switch (kind) {
+      case 'linear': return t;
+      case 'step': return 0;
+      case 'in': return t * t;
+      case 'out': return 1 - (1 - t) * (1 - t);
+      case 'bounce':
+        var n = 7.5625, d = 2.75;
+        if (t < 1 / d) return n * t * t;
+        if (t < 2 / d) { t -= 1.5 / d; return n * t * t + 0.75; }
+        if (t < 2.5 / d) { t -= 2.25 / d; return n * t * t + 0.9375; }
+        t -= 2.625 / d; return n * t * t + 0.984375;
+      default: return t * t * (3 - 2 * t);
+    }
+  }
+  function poseOf(item) { return mxFrom(item.data && item.data.pose); }
+
+  function captureKey(item) {
+    var M = poseOf(item), inv = M.inverted();
+    var pv = getPivot(item);
+    var q = inv ? inv.transform(pv) : pv;
+    var sx = Math.hypot(M.a, M.b);
+    var det = M.a * M.d - M.b * M.c;
+    return {
+      x: pv.x, y: pv.y, qx: q.x, qy: q.y,
+      r: Math.atan2(M.b, M.a) * 180 / Math.PI,
+      sx: sx, sy: sx ? det / sx : 1,
+      o: item.opacity, e: anim.ease,
+      sw: item.data.swGroup ? item.data.swActive : null
+    };
+  }
+  function buildPose(k) {
+    var rad = k.r * Math.PI / 180, c = Math.cos(rad), s = Math.sin(rad);
+    var a = c * k.sx, b = s * k.sx, cc = -s * k.sy, d = c * k.sy;
+    return new paper.Matrix(a, b, cc, d, k.x - (a * k.qx + cc * k.qy), k.y - (b * k.qx + d * k.qy));
+  }
+  function framesOf(item) {
+    var ks = item.data && item.data.keys;
+    return ks ? Object.keys(ks).map(Number).sort(function (a, b) { return a - b; }) : [];
+  }
+  function evalItem(item, f) {
+    var fr = framesOf(item);
+    if (!fr.length) return null;
+    var ks = item.data.keys;
+    if (f <= fr[0]) return ks[fr[0]];
+    if (f >= fr[fr.length - 1]) return ks[fr[fr.length - 1]];
+    var i = 0;
+    while (i < fr.length - 1 && fr[i + 1] <= f) i++;
+    var a = fr[i], b = fr[i + 1], A = ks[a], B = ks[b];
+    var t = easeT((f - a) / (b - a), A.e);
+    var L = function (p, q) { return p + (q - p) * t; };
+    return {
+      x: L(A.x, B.x), y: L(A.y, B.y), r: L(A.r, B.r), sx: L(A.sx, B.sx), sy: L(A.sy, B.sy),
+      qx: L(A.qx, B.qx), qy: L(A.qy, B.qy),
+      o: (A.o == null || B.o == null) ? A.o : L(A.o, B.o), sw: A.sw, e: A.e
+    };
+  }
+  function applyState(item, k) {
+    var M = buildPose(k), Pinv = poseOf(item).inverted();
+    if (Pinv) {
+      var D = M.clone().append(Pinv);
+      animating = true;
+      try { item.transform(D); } finally { animating = false; }
+    }
+    item.data.pose = mxArr(M);
+    item.data.pivot = [k.x, k.y];
+    if (k.o != null) item.opacity = k.o;
+    if (k.sw != null && item.data.swGroup) {
+      item.data.swActive = k.sw;
+      item.visible = (item.data.swIdx === k.sw);
+    }
+  }
+  function applyFrame(f) {
+    allTopItems().forEach(function (it) {
+      if (it.data && it.data.keys) {
+        var k = evalItem(it, f);
+        if (k) applyState(it, k);
+      }
+    });
+    paper.project._needsUpdate = true;
+  }
+
+  // ---------- keys ----------
+  function keyTargets() {
+    var out = [];
+    function add(i) { if (i && out.indexOf(i) < 0) out.push(i); }
+    function kids(i) {
+      childrenOf(i).forEach(function (c) { if (out.indexOf(c) < 0) { out.push(c); kids(c); } });
+    }
+    selection.forEach(function (s) {
+      var t = topLevelItem(s);
+      add(t); kids(t);
+      var g = t.data && t.data.swGroup;
+      if (g) allTopItems().forEach(function (i) { if (i.data && i.data.swGroup === g) add(i); });
+    });
+    return out;
+  }
+  function setKeys(items, f) {
+    items.forEach(function (it) {
+      if (!it.data) return;
+      var ks = it.data.keys || (it.data.keys = {});
+      var k = captureKey(it);
+      if (ks[f] && ks[f].e) k.e = ks[f].e;
+      var fr = framesOf(it).filter(function (x) { return x !== f; }), ref = null;
+      fr.forEach(function (x) { if (x < f && (ref === null || x > ref)) ref = x; });
+      if (ref === null) fr.forEach(function (x) { if (x > f && (ref === null || x < ref)) ref = x; });
+      if (ref !== null) k.r += 360 * Math.round((ks[ref].r - k.r) / 360);   // keep spins continuous
+      ks[f] = k;
+    });
+  }
+  function commit() { applying = true; saveState(); applying = false; }
+
+  function doKey() {
+    if (!selection.length) { say('Select an object first'); return; }
+    setKeys(keyTargets(), curFrame);
+    commit(); tlDirty = true; renderOnion();
+    say('Key set at frame ' + curFrame);
+  }
+  function doKeyAll() {
+    setKeys(allTopItems(), curFrame);
+    commit(); tlDirty = true; renderOnion();
+    say('Keyed every object at frame ' + curFrame);
+  }
+  function doDelKey() {
+    var any = false;
+    keyTargets().forEach(function (it) {
+      var ks = it.data.keys;
+      if (ks && ks[curFrame]) {
+        delete ks[curFrame]; any = true;
+        if (!Object.keys(ks).length) delete it.data.keys;
+      }
+    });
+    if (any) { applyFrame(curFrame); commit(); tlDirty = true; renderOnion(); }
+  }
+  function doClear() {
+    var targets = keyTargets();
+    targets.forEach(function (it) { delete it.data.keys; });
+    if (targets.length) { commit(); tlDirty = true; renderOnion(); say('Keys cleared'); }
+  }
+  function copyKeys() {
+    var clip = selection.map(function (it) {
+      var k = it.data.keys && it.data.keys[curFrame];
+      return k ? JSON.parse(JSON.stringify(k)) : null;
+    });
+    if (!clip.some(function (k) { return k; })) { say('No key at this frame to copy'); return; }
+    keyClip = clip; say('Key copied');
+  }
+  function pasteKeys() {
+    if (!keyClip || !selection.length) { say('Copy a key first, then select objects'); return; }
+    selection.forEach(function (it, i) {
+      var k = keyClip[i % keyClip.length];
+      if (k) { (it.data.keys || (it.data.keys = {}))[curFrame] = JSON.parse(JSON.stringify(k)); }
+    });
+    applyFrame(curFrame); commit(); tlDirty = true; renderOnion();
+  }
+
+  // ---------- frame control + playback ----------
+  function clampF(f) { return Math.max(0, Math.min(anim.length - 1, Math.round(Number(f) || 0))); }
+  function setFrame(f, noOnion) {
+    curFrame = clampF(f);
+    tlFrame.value = curFrame;
+    applyFrame(curFrame);
+    tlDirty = true;
+    if (!noOnion) renderOnion();
+  }
+  function setPlaying(on) {
+    playing = on; playAcc = 0;
+    $('tl-play').textContent = on ? '⏸ Pause' : '▶ Play';
+    if (on) {
+      if (!anim.loop && curFrame >= anim.length - 1) setFrame(0, true);
+      onionCv.getContext('2d').clearRect(0, 0, onionCv.width, onionCv.height);
+    } else renderOnion();
+  }
+
+  // ---------- onion skin ----------
+  function renderOnion() {
+    var vw = paper.view.element.width, vh = paper.view.element.height;
+    if (onionCv.width !== vw || onionCv.height !== vh) { onionCv.width = vw; onionCv.height = vh; }
+    onionCv.style.width = canvasEl.clientWidth + 'px';
+    onionCv.style.height = canvasEl.clientHeight + 'px';
+    var ctx = onionCv.getContext('2d');
+    ctx.clearRect(0, 0, vw, vh);
+    if (!anim.onion || playing) return;
+    var items = allTopItems();
+    if (!items.some(function (i) { return i.data && i.data.keys; })) return;
+
+    var targets = [], d;
+    for (d = 1; d <= anim.onB; d++) targets.push([curFrame - d, 0.3 / d]);
+    for (d = 1; d <= anim.onA; d++) targets.push([curFrame + d, 0.3 / d]);
+
+    var sel = selection.slice(), hidden = [];
+    items.forEach(function (i) {
+      if (!(i.data && i.data.keys) && i.visible) { i.visible = false; hidden.push(i); }
+    });
+    paper.project.deselectAll();
+    targets.forEach(function (t) {
+      if (t[0] < 0 || t[0] >= anim.length) return;
+      applyFrame(t[0]);
+      paper.view.update();
+      ctx.globalAlpha = t[1];
+      ctx.drawImage(paper.view.element, 0, 0);
+    });
+    ctx.globalAlpha = 1;
+    hidden.forEach(function (i) { i.visible = true; });
+    applyFrame(curFrame);
+    sel.forEach(function (i) { i.selected = true; });
+    paper.view.update();
+  }
+
+  // ---------- switch groups (change faces) ----------
+  function swMembers(item) {
+    var g = item && item.data && item.data.swGroup;
+    if (!g) return [];
+    return allTopItems().filter(function (i) { return i.data && i.data.swGroup === g; })
+      .sort(function (a, b) { return a.data.swIdx - b.data.swIdx; });
+  }
+  function swShow(item, idx) {
+    swMembers(item).forEach(function (i) { i.data.swActive = idx; i.visible = (i.data.swIdx === idx); });
+    renderLayers();
+  }
+  wire('sw-make', function () {
+    if (selection.length < 2) { say('Select 2 or more objects first'); return; }
+    var gid = newUid();
+    var items = selection.slice().sort(function (a, b) { return (a.layer.index - b.layer.index) || (a.index - b.index); });
+    items.forEach(function (it, i) {
+      it.data.swGroup = gid; it.data.swIdx = i; it.data.swActive = 0; it.visible = (i === 0);
+    });
+    renderLayers(); saveState(); say('Switch made with ' + items.length + ' parts');
+  });
+  wire('sw-undo', function () {
+    selection.forEach(function (it) {
+      swMembers(it).forEach(function (m) {
+        delete m.data.swGroup; delete m.data.swIdx; delete m.data.swActive; m.visible = true;
+      });
+    });
+    renderLayers(); saveState();
+  });
+  function swStep(dir) {
+    var it = selectedItem && topLevelItem(selectedItem), m = swMembers(it);
+    if (!m.length) { say('Select a switch part first'); return; }
+    swShow(it, (it.data.swActive + dir + m.length) % m.length);
+    saveState(); tlDirty = true;
+  }
+  wire('sw-prev', function () { swStep(-1); });
+  wire('sw-next', function () { swStep(1); });
+
+  // ---------- timeline drawing ----------
+  function depthOf(item) {
+    var d = 0, p = item.data && item.data.parent ? findByUid(item.data.parent) : null;
+    while (p && d < 10) { d++; p = p.data && p.data.parent ? findByUid(p.data.parent) : null; }
+    return d;
+  }
+  function buildRows() {
+    var rows = [], layers = paper.project.layers;
+    for (var i = layers.length - 1; i >= 0; i--) {
+      for (var j = layers[i].children.length - 1; j >= 0; j--) rows.push({ item: layers[i].children[j] });
+    }
+    return rows;
+  }
+  function drawTimeline() {
+    tlDirty = false;
+    var W = tlScroll.clientWidth, H = tlScroll.clientHeight;
+    if (W < 40 || H < 30) return;
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    var bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+    if (tlCanvas.width !== bw || tlCanvas.height !== bh) {
+      tlCanvas.width = bw; tlCanvas.height = bh;
+      tlCanvas.style.width = W + 'px'; tlCanvas.style.height = H + 'px';
+    }
+    tlRows = buildRows();
+    var cell = TL.cell, LW = TL.labelW, RH = TL.ruler, ROW = TL.row;
+    tlSpace.style.width = (LW + anim.length * cell + 60) + 'px';
+    tlSpace.style.height = (RH + tlRows.length * ROW + 10) + 'px';
+    tlSpace.style.marginTop = (-H) + 'px';
+    var sx = tlScroll.scrollLeft, sy = tlScroll.scrollTop;
+    var c = tlCanvas.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.fillStyle = '#252525'; c.fillRect(0, 0, W, H);
+    c.font = '11px system-ui, sans-serif'; c.textBaseline = 'middle';
+    var fx = function (f) { return LW + f * cell - sx; };
+
+    // rows
+    tlRows.forEach(function (r, i) {
+      var y = RH + i * ROW - sy;
+      if (y > H || y + ROW < RH) return;
+      c.fillStyle = selection.indexOf(r.item) >= 0 ? '#1f3a6e' : (i % 2 ? '#2a2a2a' : '#262626');
+      c.fillRect(LW, y, W - LW, ROW);
+    });
+    // area after the last frame
+    c.fillStyle = 'rgba(0,0,0,.35)';
+    if (fx(anim.length) < W) c.fillRect(fx(anim.length), RH, W - fx(anim.length), H - RH);
+    // grid
+    var f0 = Math.max(0, Math.floor(sx / cell)), f1 = Math.min(anim.length, Math.ceil((sx + W - LW) / cell));
+    for (var f = f0; f <= f1; f++) {
+      c.strokeStyle = (f % anim.fps === 0) ? '#555' : '#333';
+      c.beginPath(); c.moveTo(Math.round(fx(f)) + .5, RH); c.lineTo(Math.round(fx(f)) + .5, H); c.stroke();
+    }
+    // playhead column
+    c.fillStyle = 'rgba(255,59,59,.18)';
+    c.fillRect(fx(curFrame), RH, cell, H - RH);
+    // keys
+    tlRows.forEach(function (r, i) {
+      var y = RH + i * ROW - sy;
+      if (y > H || y + ROW < RH) return;
+      var ks = r.item.data && r.item.data.keys;
+      if (!ks) return;
+      var fr = framesOf(r.item), sel = selection.indexOf(r.item) >= 0, cy = y + ROW / 2;
+      var pos = fr.map(function (k) {
+        return (tlDrag && tlDrag.item === r.item && k === tlDrag.from) ? tlDrag.to : k;
+      });
+      c.fillStyle = '#666';
+      for (var n = 0; n < pos.length - 1; n++) {
+        c.fillRect(fx(pos[n]) + cell / 2, cy - 2, (pos[n + 1] - pos[n]) * cell, 4);
+      }
+      pos.forEach(function (k) {
+        var cx = fx(k) + cell / 2;
+        if (cx < LW - 8 || cx > W + 8) return;
+        c.beginPath();
+        c.moveTo(cx, cy - 6); c.lineTo(cx + 6, cy); c.lineTo(cx, cy + 6); c.lineTo(cx - 6, cy); c.closePath();
+        c.fillStyle = sel ? '#ffd27a' : '#ff9f1c'; c.fill();
+        c.strokeStyle = '#000'; c.stroke();
+      });
+    });
+    // ruler
+    c.fillStyle = '#1e1e1e'; c.fillRect(LW, 0, W - LW, RH);
+    var stepN = [1, 2, 5, 10, 20, 50, 100].filter(function (s) { return s * cell >= 30; })[0] || 100;
+    c.fillStyle = '#aaa'; c.textAlign = 'center';
+    for (var g = f0; g < f1; g++) {
+      if (g % stepN === 0) c.fillText(String(g), fx(g) + cell / 2, 9);
+      c.fillStyle = '#777'; c.fillRect(Math.round(fx(g) + cell / 2), RH - 6, 1, 6); c.fillStyle = '#aaa';
+    }
+    // playhead
+    c.fillStyle = '#ff3b3b';
+    c.fillRect(fx(curFrame), RH - 12, cell, 12);
+    c.fillStyle = '#fff'; c.fillText(String(curFrame), fx(curFrame) + cell / 2, RH - 6);
+    c.fillStyle = '#ff3b3b'; c.fillRect(Math.round(fx(curFrame) + cell / 2), RH, 1, H - RH);
+    // labels (sticky)
+    c.textAlign = 'left';
+    c.fillStyle = '#2b2b2b'; c.fillRect(0, 0, LW, H);
+    tlRows.forEach(function (r, i) {
+      var y = RH + i * ROW - sy;
+      if (y > H || y + ROW < RH) return;
+      var sel = selection.indexOf(r.item) >= 0;
+      c.fillStyle = sel ? '#1f4fa8' : (i % 2 ? '#2f2f2f' : '#2b2b2b');
+      c.fillRect(0, y, LW, ROW);
+      c.save(); c.beginPath(); c.rect(0, y, LW - 4, ROW); c.clip();
+      c.fillStyle = r.item.visible ? '#ddd' : '#777';
+      var dep = depthOf(r.item) * 10;
+      c.fillText((r.item.data.icon || '◆') + ' ' + (r.item.name || 'Object'), 8 + dep, y + ROW / 2);
+      c.restore();
+    });
+    c.fillStyle = '#1e1e1e'; c.fillRect(0, 0, LW, RH);
+    c.fillStyle = '#888'; c.fillText('Objects', 8, RH / 2);
+    c.fillStyle = '#111'; c.fillRect(LW - 1, 0, 1, H);
+  }
+
+  // ---------- timeline touch / mouse ----------
+  var tlPtrs = {};
+  function centroid() {
+    var ids = Object.keys(tlPtrs), x = 0, y = 0;
+    ids.forEach(function (k) { x += tlPtrs[k].x; y += tlPtrs[k].y; });
+    return { x: x / ids.length, y: y / ids.length };
+  }
+  function frameAt(e) {
+    var r = tlCanvas.getBoundingClientRect();
+    return Math.floor((e.clientX - r.left - TL.labelW + tlScroll.scrollLeft) / TL.cell);
+  }
+  tlCanvas.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    tlCanvas.setPointerCapture(e.pointerId);
+    tlPtrs[e.pointerId] = { x: e.clientX, y: e.clientY };
+    if (Object.keys(tlPtrs).length >= 2) { tlMode = 'scroll'; tlDrag = null; return; }
+    var r = tlCanvas.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    var f = frameAt(e);
+    if (py < TL.ruler) {
+      if (px >= TL.labelW) { tlMode = 'scrub'; setFrame(f); }
+      return;
+    }
+    var row = tlRows[Math.floor((py - TL.ruler + tlScroll.scrollTop) / TL.row)];
+    if (!row) return;
+    if (selection.indexOf(row.item) < 0 || currentToolName !== 'select') selectItem(row.item);
+    if (px < TL.labelW) return;
+    if (f < 0 || f >= anim.length) return;
+    var ks = row.item.data.keys;
+    if (ks && ks[f]) { tlMode = 'keydrag'; tlDrag = { item: row.item, from: f, to: f }; }
+    else tlMode = 'scrub';
+    setFrame(f);
+  });
+  tlCanvas.addEventListener('pointermove', function (e) {
+    var p = tlPtrs[e.pointerId];
+    if (!p) return;
+    if (Object.keys(tlPtrs).length >= 2) {
+      var before = centroid();
+      p.x = e.clientX; p.y = e.clientY;
+      var after = centroid();
+      tlScroll.scrollLeft -= after.x - before.x;
+      tlScroll.scrollTop -= after.y - before.y;
+      tlDirty = true;
+      return;
+    }
+    p.x = e.clientX; p.y = e.clientY;
+    var f = clampF(frameAt(e));
+    if (tlMode === 'scrub') setFrame(f);
+    else if (tlMode === 'keydrag' && tlDrag) { tlDrag.to = f; setFrame(f, true); }
+  });
+  function tlEnd(e) {
+    delete tlPtrs[e.pointerId];
+    if (Object.keys(tlPtrs).length) return;
+    if (tlMode === 'keydrag' && tlDrag && tlDrag.to !== tlDrag.from) {
+      var ks = tlDrag.item.data.keys;
+      if (ks && ks[tlDrag.from]) {
+        ks[tlDrag.to] = ks[tlDrag.from];
+        delete ks[tlDrag.from];
+        applyFrame(curFrame);
+        commit();
+      }
+    }
+    tlDrag = null; tlMode = null; tlDirty = true; renderOnion();
+  }
+  tlCanvas.addEventListener('pointerup', tlEnd);
+  tlCanvas.addEventListener('pointercancel', tlEnd);
+
+  tlScroll.addEventListener('scroll', function () { tlDirty = true; });
+  tlScroll.addEventListener('wheel', function (e) {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    TL.cell = Math.max(5, Math.min(60, TL.cell * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    tlDirty = true;
+  }, { passive: false });
+  new ResizeObserver(function () { tlDirty = true; }).observe(tlScroll);
+
+  // ---------- controls ----------
+  function syncInputs() {
+    tlLength.value = anim.length; tlFps.value = anim.fps; tlLoop.checked = !!anim.loop;
+    tlOnion.checked = !!anim.onion; tlOnb.value = anim.onB; tlOna.value = anim.onA;
+    tlEase.value = anim.ease; autoBtn.classList.toggle('active', !!anim.auto);
+    var to = $('ss-to'); if (to && Number(to.value) > anim.length - 1) to.value = anim.length - 1;
+  }
+  wire('tl-first', function () { setFrame(0); });
+  wire('tl-prev', function () { setFrame(curFrame - 1); });
+  wire('tl-next', function () { setFrame(curFrame + 1); });
+  wire('tl-play', function () { setPlaying(!playing); });
+  tlFrame.addEventListener('change', function () { setFrame(tlFrame.value); });
+  tlLength.addEventListener('change', function () {
+    anim.length = Math.max(1, Math.min(600, Math.round(Number(tlLength.value) || 24)));
+    syncInputs();
+    if (curFrame >= anim.length) setFrame(anim.length - 1);
+    tlDirty = true;
+  });
+  tlFps.addEventListener('change', function () {
+    anim.fps = Math.max(1, Math.min(60, Math.round(Number(tlFps.value) || 12)));
+    syncInputs();
+  });
+  tlLoop.addEventListener('change', function () { anim.loop = tlLoop.checked; });
+  tlOnion.addEventListener('change', function () { anim.onion = tlOnion.checked; renderOnion(); });
+  tlOnb.addEventListener('change', function () { anim.onB = Math.max(0, Math.min(6, Number(tlOnb.value) || 0)); renderOnion(); });
+  tlOna.addEventListener('change', function () { anim.onA = Math.max(0, Math.min(6, Number(tlOna.value) || 0)); renderOnion(); });
+  tlEase.addEventListener('change', function () {
+    anim.ease = tlEase.value;
+    var changed = false;
+    keyTargets().forEach(function (it) {
+      var k = it.data.keys && it.data.keys[curFrame];
+      if (k) { k.e = anim.ease; changed = true; }
+    });
+    if (changed) { applyFrame(curFrame); commit(); tlDirty = true; say('Motion changed for this key'); }
+  });
+  wire('tl-key', doKey);
+  wire('tl-keyall', doKeyAll);
+  wire('tl-delkey', doDelKey);
+  wire('tl-clear', doClear);
+  wire('tl-copykey', copyKeys);
+  wire('tl-pastekey', pasteKeys);
+  wire('tl-auto', function () {
+    anim.auto = !anim.auto; autoBtn.classList.toggle('active', anim.auto);
+    say(anim.auto ? 'Auto key ON: every change is keyed' : 'Auto key off');
+  });
+  wire('tl-zoom-in', function () { TL.cell = Math.min(60, TL.cell * 1.3); tlDirty = true; });
+  wire('tl-zoom-out', function () { TL.cell = Math.max(5, TL.cell / 1.3); tlDirty = true; });
+
+  document.addEventListener('keydown', function (e) {
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.code === 'Space' && e.shiftKey) {
+      e.preventDefault(); e.stopImmediatePropagation(); setPlaying(!playing); return;
+    }
+    if (e.altKey && e.code === 'KeyC') { e.preventDefault(); copyKeys(); return; }
+    if (e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteKeys(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var k = e.key.toLowerCase();
+    if (k === 'j') doKey();
+    else if (e.key === ',') setFrame(curFrame - 1);
+    else if (e.key === '.') setFrame(curFrame + 1);
+  }, true);
+
+  // ---------- status text ----------
+  function updateStatus() {
+    var msg = 'Frame ' + curFrame + ' / ' + (anim.length - 1);
+    var it = selection.length ? topLevelItem(selection[0]) : null;
+    if (it) {
+      var ks = it.data.keys;
+      if (!ks || !Object.keys(ks).length) msg += ' · no keys yet. Press ◆ Key (J)';
+      else if (ks[curFrame]) msg += ' · KEY';
+      else {
+        var ev = evalItem(it, curFrame), cu = captureKey(it);
+        var rd = Math.abs((((ev.r - cu.r) % 360) + 540) % 360 - 180);
+        var diff = Math.abs(ev.x - cu.x) > 0.5 || Math.abs(ev.y - cu.y) > 0.5 ||
+          Math.abs(ev.sx - cu.sx) > 0.01 || Math.abs(ev.sy - cu.sy) > 0.01 || (180 - rd) > 0.5;
+        msg += diff ? ' · unkeyed change! Press ◆ Key (J) or it is lost' : ' · between keys';
+      }
+    }
+    statusEl.textContent = msg;
+    var swl = $('sw-label');
+    if (swl) {
+      var s = selectedItem && topLevelItem(selectedItem), m = swMembers(s);
+      swl.textContent = m.length
+        ? 'Showing part ' + (s.data.swActive + 1) + ' of ' + m.length
+        : 'Select a switch group to change its shown part.';
+    }
+  }
+
+  // ---------- frame tick (called by paper.view.onFrame) ----------
+  var lastSig = '', lastView = '', tickCount = 0, onionTimer = null;
+  window.tickTimeline = function (e) {
+    if (playing) {
+      playAcc += (e && e.delta) || 0.016;
+      var step = 1 / anim.fps, adv = 0;
+      while (playAcc >= step) { playAcc -= step; adv++; }
+      if (adv) {
+        var f = curFrame + adv;
+        if (f >= anim.length) {
+          if (anim.loop) f = f % anim.length;
+          else { setFrame(anim.length - 1, true); setPlaying(false); f = -1; }
+        }
+        if (f >= 0) setFrame(f, true);
+      }
+    }
+    var sig = curFrame + '|' + selection.map(function (i) { return i.id; }).join(',') +
+      '|' + allTopItems().length + '|' + TL.cell + '|' + anim.length;
+    if (sig !== lastSig) { lastSig = sig; tlDirty = true; }
+    if (tlDirty) drawTimeline();
+
+    if (anim.onion && !playing) {
+      var vs = paper.view.zoom + '|' + paper.view.center.x + '|' + paper.view.center.y;
+      if (vs !== lastView) {
+        lastView = vs;
+        onionCv.getContext('2d').clearRect(0, 0, onionCv.width, onionCv.height);
+        clearTimeout(onionTimer);
+        onionTimer = setTimeout(renderOnion, 120);
+      }
+    }
+    if (!playing && (++tickCount % 12 === 0)) updateStatus();
+  };
+
+  // ---------- hooks into the existing app ----------
+  var _saveState = saveState;
+  saveState = function () {
+    if (anim.auto && !applying && !playing && selection.length) { setKeys(keyTargets(), curFrame); tlDirty = true; }
+    return _saveState.apply(this, arguments);
+  };
+  var _restoreState = restoreState;
+  restoreState = function () {
+    var r = _restoreState.apply(this, arguments);
+    applyFrame(curFrame); tlDirty = true;
+    return r;
+  };
+  var _loadSnap = loadProjectSnapshot;
+  loadProjectSnapshot = function () {
+    var r = _loadSnap.apply(this, arguments);
+    applyFrame(curFrame); tlDirty = true; renderOnion();
+    return r;
+  };
+  var _projectData = projectData;
+  projectData = function () {
+    var d = _projectData();
+    d.anim = { length: anim.length, fps: anim.fps, loop: anim.loop, ease: anim.ease };
+    return d;
+  };
+  var _loadData = loadProjectData;
+  loadProjectData = function (data) {
+    if (data && data.anim) { Object.assign(anim, data.anim); syncInputs(); }
+    return _loadData(data);
+  };
+
+  // ---------- sprite sheet ----------
+  function exportSprites() {
+    var from = Math.max(0, Math.min(anim.length - 1, Math.round(Number($('ss-from').value) || 0)));
+    var to = Math.max(from, Math.min(anim.length - 1, Math.round(Number($('ss-to').value) || 0)));
+    var cols = Math.max(1, Math.min(64, Math.round(Number($('ss-cols').value) || 1)));
+    var pad = Math.max(0, Math.min(64, Math.round(Number($('ss-pad').value) || 0)));
+    var sc = Math.max(10, Math.min(800, Number($('ss-scale').value) || 100)) / 100;
+    var name = ($('ss-name').value || 'sprites').replace(/[^\w\-]+/g, '_');
+    var cw = Math.max(1, Math.round(frame.w * sc)), ch = Math.max(1, Math.round(frame.h * sc));
+    var count = to - from + 1, rows = Math.ceil(count / cols);
+    var W = cols * cw + (cols + 1) * pad, H = rows * ch + (rows + 1) * pad;
+    if (W > 8192 || H > 8192 || W * H > 16000000) {
+      alert('The sheet would be ' + W + ' x ' + H + ' px. Too big. Lower the scale, columns or frame range.');
+      return;
+    }
+    var sheet = document.createElement('canvas');
+    sheet.width = W; sheet.height = H;
+    var sctx = sheet.getContext('2d');
+    var bg = expBg.value === 'color' ? expBgColor.value : null;
+    if (bg) { sctx.fillStyle = bg; sctx.fillRect(0, 0, W, H); }
+
+    var keep = curFrame;
+    setPlaying(false);
+    var area = new paper.Rectangle(frame.x, frame.y, frame.w, frame.h), metaFrames = [];
+    for (var i = 0; i < count; i++) {
+      applyFrame(from + i);
+      var cv = renderArea(area, cw, ch, false, bg);
+      var x = pad + (i % cols) * (cw + pad), y = pad + Math.floor(i / cols) * (ch + pad);
+      sctx.drawImage(cv, x, y);
+      metaFrames.push({ index: from + i, x: x, y: y, w: cw, h: ch });
+    }
+    applyFrame(keep);
+    paper.view.update();
+
+    var json = { image: name + '.png', cellWidth: cw, cellHeight: ch, columns: cols, rows: rows,
+                 fps: anim.fps, frameCount: count, frames: metaFrames };
+    sheet.toBlob(function (blob) {
+      if (!blob) { alert('Export failed. Try a smaller size.'); return; }
+      downloadBlob(blob, name + '.png');
+      setTimeout(function () {
+        downloadBlob(new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' }), name + '.json');
+      }, 500);
+    }, 'image/png');
+  }
+  wire('ss-download', exportSprites);
+  ['ss-cols', 'ss-pad', 'ss-scale', 'ss-from', 'ss-to'].forEach(function (id) {
+    var el = $(id);
+    if (el) el.addEventListener('change', function () {
+      var info = $('ss-info');
+      if (!info) return;
+      var n = Math.max(1, (Number($('ss-to').value) || 0) - (Number($('ss-from').value) || 0) + 1);
+      var cols = Math.max(1, Number($('ss-cols').value) || 1), sc = (Number($('ss-scale').value) || 100) / 100;
+      var pad = Number($('ss-pad').value) || 0;
+      info.textContent = n + ' frames, sheet about ' +
+        Math.round(cols * frame.w * sc + (cols + 1) * pad) + ' x ' +
+        Math.round(Math.ceil(n / cols) * frame.h * sc + (Math.ceil(n / cols) + 1) * pad) + ' px';
+    });
+  });
+
+  syncInputs();
+  setFrame(0, true);
+})();
+
+// ======================================================
+// SELECTED POINT MARKER (green)
+// ======================================================
+(function () {
+  var mark = document.createElement('div');
+  mark.id = 'node-mark';
+  canvasArea.appendChild(mark);
+
+  function refreshMark() {
+    var seg = (typeof nodeSel !== 'undefined') ? nodeSel : null;
+    if (currentToolName !== 'node' || !seg || !seg.path || !seg.path.parent) {
+      mark.style.display = 'none';
+      return;
+    }
+    var gp = seg.path.localToGlobal ? seg.path.localToGlobal(seg.point) : seg.point;
+    var v = paper.view.projectToView(gp);
+    mark.style.display = 'block';
+    mark.style.left = v.x + 'px';
+    mark.style.top = v.y + 'px';
+  }
+
+  // runs every frame, next to the existing onFrame handler
+  paper.view.on('frame', refreshMark);
+})();

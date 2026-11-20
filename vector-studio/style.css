@@ -452,3 +452,23 @@ button:active { filter: brightness(1.6); transform: scale(.94); }
   background:linear-gradient(135deg,transparent 50%,#888 50%,#888 58%,transparent 58%,transparent 70%,#888 70%,#888 78%,transparent 78%)}
 @media (pointer:coarse){#cp-grip{width:38px;height:38px}}
 .layer-actions button.active{background:#2f6fed;border-color:#2f6fed;color:#fff}
+
+#tl-scroll{position:relative}
+#tl-canvas{position:sticky;left:0;top:0;display:block;touch-action:none}
+#tl-space{pointer-events:none}
+#tl-bar button.active{background:#2f6fed;border-color:#2f6fed;color:#fff}
+#tl-status{color:#ff9f1c;font-size:12px;margin-left:6px}
+/* selected path point marker */
+#node-mark{
+  position:absolute;display:none;z-index:9;pointer-events:none;
+  width:18px;height:18px;border-radius:50%;
+  background:#00e676;border:3px solid #fff;
+  box-shadow:0 0 0 2px #00a152,0 0 14px 4px rgba(0,230,118,.85);
+  transform:translate(-50%,-50%);
+  animation:nodepulse 1.1s ease-in-out infinite;
+}
+@keyframes nodepulse{
+  0%,100%{box-shadow:0 0 0 2px #00a152,0 0 10px 2px rgba(0,230,118,.7)}
+  50%{box-shadow:0 0 0 2px #00a152,0 0 18px 7px rgba(0,230,118,.95)}
+}
+@media (pointer:coarse){#node-mark{width:26px;height:26px}}
