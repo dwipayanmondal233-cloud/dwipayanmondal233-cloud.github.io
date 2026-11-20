@@ -440,3 +440,15 @@ button:active { filter: brightness(1.6); transform: scale(.94); }
   .cp-sw i{width:30px;height:30px}
   .cp-f input[type=number]{height:34px} #cp button{padding:10px 12px}
 }
+/* ---- color picker: resizable + movable ---- */
+#cp{box-sizing:border-box;width:var(--cp-w,264px);max-height:calc(100vh - 16px);
+  overflow-y:auto;overflow-x:hidden;touch-action:pan-y}
+#cp-sv{height:var(--cp-svh,150px)}
+#cp-head{display:flex;align-items:center;justify-content:space-between;margin:-4px -2px 8px;
+  padding:2px 2px 6px;border-bottom:1px solid #444;color:#aaa;cursor:move;touch-action:none;
+  font-weight:600;user-select:none}
+#cp-x{padding:2px 9px!important}
+#cp-grip{display:block;width:26px;height:26px;margin:8px 0 0 auto;cursor:nwse-resize;touch-action:none;
+  background:linear-gradient(135deg,transparent 50%,#888 50%,#888 58%,transparent 58%,transparent 70%,#888 70%,#888 78%,transparent 78%)}
+@media (pointer:coarse){#cp-grip{width:38px;height:38px}}
+.layer-actions button.active{background:#2f6fed;border-color:#2f6fed;color:#fff}

@@ -3461,6 +3461,9 @@ const ColorPicker = (function () {
     '<div class="cp-lbl">Palette</div><div class="cp-sw" id="cp-pal"></div>' +
     '<div class="cp-lbl">Recent</div><div class="cp-sw" id="cp-recent"></div>';
   document.body.appendChild(pop);
+    pop.insertAdjacentHTML('afterbegin',
+    '<div id="cp-head"><span>Color ⠿ drag to move</span><button id="cp-x" title="Close">✕</button></div>');
+  pop.insertAdjacentHTML('beforeend', '<div id="cp-grip" title="Drag to resize"></div>');
 
   const $ = function (s) { return pop.querySelector(s); };
   const sv = $('#cp-sv'), svDot = $('#cp-sv-dot'), hueBar = $('#cp-hue'), alphaBar = $('#cp-alpha');
@@ -3661,6 +3664,65 @@ const ColorPicker = (function () {
   drag(hueBar, function (e) { st.h = frac(e, hueBar, 'x') * 360; update(); emit(false); });
   drag(alphaBar, function (e) { st.a = frac(e, alphaBar, 'x'); update(); emit(false); });
 
+  // ---- resize + move ----
+  const head = $('#cp-head'), grip = $('#cp-grip');
+
+  function setSize(w, h) {
+    w = clamp(w, 230, Math.min(560, window.innerWidth - 16));
+    h = clamp(h, 100, 360);
+    pop.style.setProperty('--cp-w', w + 'px');
+    pop.style.setProperty('--cp-svh', h + 'px');
+    try { localStorage.setItem('vs-cp-size', JSON.stringify([w, h])); } catch (e) {}
+  }
+  function keepOnScreen() {
+    const r = pop.getBoundingClientRect();
+    pop.style.left = clamp(r.left, 0, Math.max(0, window.innerWidth - r.width)) + 'px';
+    pop.style.top = clamp(r.top, 0, Math.max(0, window.innerHeight - r.height)) + 'px';
+  }
+  (function () {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('vs-cp-size') || 'null'); } catch (e) {}
+    const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+    const s = saved || (coarse ? [300, 180] : [264, 150]);
+    setSize(s[0], s[1]);
+  })();
+
+  grip.addEventListener('pointerdown', function (e) {
+    e.preventDefault(); e.stopPropagation();
+    grip.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY, w0 = pop.offsetWidth, h0 = sv.offsetHeight;
+    const mv = function (ev) { setSize(w0 + (ev.clientX - sx), h0 + (ev.clientY - sy)); };
+    const up = function () {
+      grip.removeEventListener('pointermove', mv);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+      keepOnScreen();
+    };
+    grip.addEventListener('pointermove', mv);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+  });
+
+  head.addEventListener('pointerdown', function (e) {
+    if (e.target.id === 'cp-x') return;
+    e.preventDefault();
+    head.setPointerCapture(e.pointerId);
+    const r = pop.getBoundingClientRect(), ox = e.clientX - r.left, oy = e.clientY - r.top;
+    const mv = function (ev) {
+      pop.style.left = clamp(ev.clientX - ox, 0, window.innerWidth - 60) + 'px';
+      pop.style.top = clamp(ev.clientY - oy, 0, window.innerHeight - 40) + 'px';
+    };
+    const up = function () {
+      head.removeEventListener('pointermove', mv);
+      head.removeEventListener('pointerup', up);
+      head.removeEventListener('pointercancel', up);
+    };
+    head.addEventListener('pointermove', mv);
+    head.addEventListener('pointerup', up);
+    head.addEventListener('pointercancel', up);
+  });
+  $('#cp-x').addEventListener('click', function () { close(); });
+
   hexEl.addEventListener('input', function () {
     const p = parseHex(hexEl.value);
     if (!p) return;
@@ -3776,3 +3838,187 @@ window.toast = function (msg) {
   clearTimeout(t._tm);
   t._tm = setTimeout(function () { t.style.display = 'none'; }, 1800);
 };
+
+// ======================================================
+// DAY 3: add points, point tools, clipboard, nudge
+// ======================================================
+function say(msg) { if (window.toast) toast(msg); }
+
+function allPathsFrom(items, out) {
+  items.forEach(function (i) {
+    if (i.className === 'Path') out.push(i);
+    else if (i.children && i.className !== 'Layer') allPathsFrom(i.children, out);
+  });
+  return out;
+}
+
+function nearestOnPaths(paths, point, tol) {
+  let best = null;
+  paths.forEach(function (p) {
+    const loc = p.getNearestLocation(point);
+    if (loc && loc.distance <= tol && (!best || loc.distance < best.loc.distance)) {
+      best = { path: p, loc: loc };
+    }
+  });
+  return best;
+}
+
+// ----- Add point mode (tap a line, drag the new point) -----
+let addPointMode = false;
+const _nodeDown = tools.node.onMouseDown;
+
+tools.node.onMouseDown = function (event) {
+  if (addPointMode) {
+    // existing points and handles are still dragged normally
+    const onNode = paper.project.hitTest(event.point, {
+      segments: true, handles: true, tolerance: 12 / paper.view.zoom
+    });
+    if (!onNode) {
+      const tol = 16 / paper.view.zoom;
+      let found = nearestOnPaths(allPathsFrom(selection, []), event.point, tol);
+      if (!found) found = nearestOnPaths(allPathsFrom(leafItemsTopDown(), []), event.point, tol);
+      if (found) {
+        const path = found.path;
+        const top = topLevelItem(path);
+        if (selection.indexOf(top) < 0) setSelection([top]);
+        path.fullySelected = true;
+        clearRound(path);
+        const seg = path.divideAt(found.loc);
+        if (seg) {
+          nodeHit = { type: 'segment', segment: seg, item: path };
+          nodeSel = seg;
+          nodeMoved = true;          // makes mouse-up save the change
+          return;
+        }
+      }
+    }
+  }
+  _nodeDown(event);
+};
+
+wire('node-add', function () {
+  const btn = document.getElementById('node-add');
+  addPointMode = !addPointMode;
+  btn.classList.toggle('active', addPointMode);
+  if (addPointMode && currentToolName !== 'node') {
+    const keep = selection.slice();
+    setTool('node');
+    setSelection(keep);
+    keep.forEach(function (i) { i.fullySelected = true; });
+  }
+  say(addPointMode ? 'Add point mode ON: tap a line' : 'Add point mode off');
+});
+
+// ----- Insert a point in the middle of every segment -----
+wire('node-insert', function () {
+  const paths = allPathsFrom(selection, []);
+  if (!paths.length) { say('Select a path first'); return; }
+  paths.forEach(function (p) {
+    clearRound(p);
+    p.curves.slice().forEach(function (c) { c.divideAtTime(0.5); });
+    if (currentToolName === 'node') p.fullySelected = true;
+  });
+  saveState();
+});
+
+// ----- Delete point / smooth <-> corner -----
+wire('node-del', function () {
+  if (nodeSel && nodeSel.path) removeNode(nodeSel);
+  else say('Tap a point with the Node tool first');
+});
+
+wire('node-type', function () {
+  if (!(nodeSel && nodeSel.path)) { say('Tap a point with the Node tool first'); return; }
+  const seg = nodeSel;
+  clearRound(seg.path);
+  if (seg.handleIn.isZero() && seg.handleOut.isZero()) {
+    seg.smooth();
+  } else {
+    seg.handleIn = new paper.Point(0, 0);
+    seg.handleOut = new paper.Point(0, 0);
+  }
+  saveState();
+});
+
+// ----- Copy / Cut / Paste -----
+let clipboard = [], pasteCount = 0;
+
+function copySelection() {
+  if (!selection.length) { say('Select something first'); return false; }
+  clipboard = selection.map(function (i) { return i.clone({ insert: false }); });
+  pasteCount = 0;
+  say('Copied ' + clipboard.length + ' object(s)');
+  return true;
+}
+
+function cutSelection() {
+  if (copySelection()) deleteObject();
+}
+
+function pasteClipboard() {
+  if (!clipboard.length) { say('Nothing copied yet'); return; }
+  pasteCount++;
+  const off = new paper.Point(20 * pasteCount, 20 * pasteCount);
+  const layer = paper.project.activeLayer;
+  const map = {};
+  const pasted = clipboard.map(function (src) {
+    const c = src.clone({ insert: false });
+    layer.addChild(c);
+    if (c.data.uid) {
+      const old = c.data.uid;
+      c.data.uid = newUid();
+      map[old] = c.data.uid;
+    }
+    c.position = c.position.add(off);
+    c.name = (src.name || 'Object') + ' copy';
+    return c;
+  });
+  pasted.forEach(function (c) {
+    const p = c.data.parent;
+    if (!p) return;
+    if (map[p]) c.data.parent = map[p];
+    else delete c.data.parent;        // parent was not copied
+  });
+  setSelection(pasted);
+  saveState();
+}
+
+wire('cb-copy', copySelection);
+wire('cb-cut', cutSelection);
+wire('cb-paste', pasteClipboard);
+
+// ----- Nudge (arrow keys + buttons) -----
+let nudgeTimer = null;
+function nudge(dx, dy) {
+  if (!selection.length) return;
+  selection.forEach(function (i) { i.position = i.position.add(new paper.Point(dx, dy)); });
+  clearTimeout(nudgeTimer);
+  nudgeTimer = setTimeout(saveState, 400);   // one undo step per burst
+}
+function nudgeStep() {
+  return Number(document.getElementById('nudge-step').value) || 1;
+}
+wire('nd-left',  function () { nudge(-nudgeStep(), 0); });
+wire('nd-right', function () { nudge(nudgeStep(), 0); });
+wire('nd-up',    function () { nudge(0, -nudgeStep()); });
+wire('nd-down',  function () { nudge(0, nudgeStep()); });
+
+document.addEventListener('keydown', function (e) {
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  const key = e.key.toLowerCase();
+  const ctrl = e.ctrlKey || e.metaKey;
+
+  if (ctrl && !e.shiftKey && !e.altKey) {
+    if (key === 'c') { e.preventDefault(); copySelection(); }
+    else if (key === 'x') { e.preventDefault(); cutSelection(); }
+    else if (key === 'v') { e.preventDefault(); pasteClipboard(); }
+    return;
+  }
+  if (!ctrl && key.indexOf('arrow') === 0 && selection.length) {
+    e.preventDefault();
+    const s = nudgeStep() * (e.shiftKey ? 10 : 1);
+    nudge(key === 'arrowleft' ? -s : key === 'arrowright' ? s : 0,
+          key === 'arrowup' ? -s : key === 'arrowdown' ? s : 0);
+  }
+});

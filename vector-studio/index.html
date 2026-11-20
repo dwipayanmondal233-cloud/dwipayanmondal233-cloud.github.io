@@ -117,7 +117,7 @@
           <label class="prop-row">Stroke width
             <input type="number" id="stroke-width" value="2" min="0" max="50">
           </label>
-          
+
           <div class="layer-actions">
             <button id="swap-colors" title="Swap fill and stroke colors">⇄ Swap fill / stroke</button>
           </div>
@@ -314,6 +314,34 @@
             <button id="img-cut" title="Draw a closed outline with the Pen tool, select it, then press this to cut that area out of the image">Cut out</button>
           </div>
           <p class="hint">1) Select the image, press Remove BG (or use the Magic wand). 2) Press Split parts to separate every piece. For pieces that touch, draw a Pen outline around the part, select it, and press Cut out.</p>
+
+          <h3 class="section-title">Nodes (path points)</h3>
+          <div class="layer-actions">
+            <button id="node-add" title="Turn on, then tap a path line to add a point. Drag to place it">＋ Add point mode</button>
+            <button id="node-insert" title="Add a point in the middle of every segment of the selected path">Insert mid</button>
+          </div>
+          <div class="layer-actions">
+            <button id="node-del" title="Delete the selected point">Delete point</button>
+            <button id="node-type" title="Switch the selected point between smooth and corner">Smooth / Corner</button>
+          </div>
+          <p class="hint">Node tool (N): tap a point to select it. With Add point mode on, tap a line to add a point and drag it.</p>
+
+          <h3 class="section-title">Clipboard &amp; nudge</h3>
+          <div class="layer-actions">
+            <button id="cb-copy">Copy</button>
+            <button id="cb-cut">Cut</button>
+            <button id="cb-paste">Paste</button>
+          </div>
+          <div class="layer-actions">
+            <button id="nd-left">◀</button>
+            <button id="nd-up">▲</button>
+            <button id="nd-down">▼</button>
+            <button id="nd-right">▶</button>
+          </div>
+          <label class="prop-row">Nudge step px
+            <input type="number" id="nudge-step" value="1" min="1" max="200">
+          </label>
+          <p class="hint">Ctrl+C / X / V copy, cut and paste. Arrow keys nudge the selection (hold Shift for 10×).</p>
 
           <h3 class="section-title">Path operations</h3>
           <div class="layer-actions">
