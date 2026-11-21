@@ -5249,6 +5249,48 @@ document.addEventListener('keydown', function (e) {
     ['tint', 'Tint my sprite', 'chk']
   ];
 
+  // ---- Day 6: water + liquid ----
+  Object.assign(DEF, { floor: false, floorY: 0.9, splash: 3, splashSize: 0.6, splashPower: 0.35,
+    liquid: false, gooT: 0.45, gooS: 0.22 });
+
+  var WATER = { blend: 'source-over', liquid: true, fadeIn: 0, fadeOut: 0, sprite: 'soft',
+    c0: '#e4f9ff', c1: '#58c4ff', c2: '#1b6fd6', opacity: 0.95, floor: true };
+
+  PRE.push(
+    ['🚰 Pipe flow', Object.assign({}, WATER, { count: 160, duration: 1.2, ox: 0.16, oy: 0.26,
+      shape: 'circle', er: 3, angle: 6, spread: 3, speedMin: 200, speedMax: 225, gravity: 720,
+      lifeMin: 1.2, lifeMax: 1.2, sizeStart: 30, sizeEnd: 26, sizeVar: 0.12,
+      floorY: 0.9, splash: 3, splashSize: 0.75, splashPower: 0.3 })],
+    ['💦 Water blast', Object.assign({}, WATER, { mode: 'burst', count: 240, duration: 1.8, burstSpread: 0.06,
+      ox: 0.5, oy: 0.86, shape: 'point', angle: -90, spread: 70, speedMin: 220, speedMax: 520,
+      gravity: 800, drag: 0.25, lifeMin: 1.2, lifeMax: 1.7, sizeStart: 26, sizeEnd: 18, sizeVar: 0.35,
+      floorY: 0.9, splash: 2, splashSize: 0.6, splashPower: 0.3 })],
+    ['⛲ Fountain', Object.assign({}, WATER, { count: 170, duration: 1.4, ox: 0.5, oy: 0.8,
+      shape: 'point', angle: -90, spread: 16, speedMin: 300, speedMax: 380, gravity: 640,
+      lifeMin: 1.4, lifeMax: 1.4, sizeStart: 22, sizeEnd: 20, sizeVar: 0.25,
+      floorY: 0.84, splash: 3, splashSize: 0.7, splashPower: 0.28 })],
+    ['🌊 Waterfall', Object.assign({}, WATER, { count: 260, duration: 1.2, ox: 0.5, oy: 0.06,
+      shape: 'line', er: 50, angle: 90, spread: 5, speedMin: 30, speedMax: 60, gravity: 650,
+      lifeMin: 1.2, lifeMax: 1.2, sizeStart: 26, sizeEnd: 24, sizeVar: 0.2,
+      floorY: 0.9, splash: 4, splashSize: 0.6, splashPower: 0.22 })],
+    ['💧 Water drip', Object.assign({}, WATER, { count: 3, duration: 1.2, ox: 0.5, oy: 0.15,
+      shape: 'point', angle: 90, spread: 0, speedMin: 0, speedMax: 8, gravity: 700,
+      lifeMin: 1.2, lifeMax: 1.2, sizeStart: 20, sizeEnd: 18, sizeVar: 0.1, stretch: 0.7,
+      floorY: 0.9, splash: 6, splashSize: 0.5, splashPower: 0.5 })]
+  );
+
+  UI.push(
+    ['Water & liquid'],
+    ['liquid', 'Liquid (goo) look', 'chk'],
+    ['gooT', 'Goo threshold', 'num', 0.05, 0.95, 0.01],
+    ['gooS', 'Goo softness', 'num', 0.02, 0.6, 0.01],
+    ['floor', 'Floor + splash', 'chk'],
+    ['floorY', 'Floor height', 'num', 0, 1, 0.01],
+    ['splash', 'Splash drops', 'num', 0, 8, 1],
+    ['splashSize', 'Splash size', 'num', 0.1, 2, 0.05],
+    ['splashPower', 'Splash power', 'num', 0, 1.5, 0.05]
+  );
+
   var fx = Object.assign({}, DEF);
   var parts = [], ramp = [], customBase = null, baseCache = {};
   var isOpen = false, playing = true, time = 0, lastTs = 0, previewBg = 'checker';
@@ -5400,8 +5442,52 @@ document.addEventListener('keydown', function (e) {
       return ((t ^ t >>> 14) >>> 0) / 4294967296;
     };
   }
+  function stateAt(p, age) {
+    var k = p.k != null ? p.k : fx.drag, g = p.g != null ? p.g : fx.gravity, x, y, vx, vy;
+    if (k < 1e-4) {
+      x = p.px + p.vx * age; y = p.py + p.vy * age + 0.5 * g * age * age;
+      vx = p.vx; vy = p.vy + g * age;
+    } else {
+      var e = Math.exp(-k * age), gk = g / k;
+      x = p.px + p.vx * (1 - e) / k;
+      y = p.py + gk * age + (p.vy - gk) * (1 - e) / k;
+      vx = p.vx * e; vy = gk + (p.vy - gk) * e;
+    }
+    if (!p.plain) {
+      if (fx.wob) {
+        var w = TAU * (fx.wobFreq * age + p.ph);
+        x += fx.wob * Math.sin(w); y += fx.wob * 0.5 * Math.cos(w * 0.8);
+      }
+      if (fx.swirl) {
+        var sa = fx.swirl * age * Math.PI / 180, c = Math.cos(sa), s = Math.sin(sa);
+        var nx = x * c - y * s; y = x * s + y * c; x = nx;
+      }
+    }
+    return { x: x, y: y, vx: vx, vy: vy };
+  }
+
+  // when does this particle reach the floor? (null = never)
+  function landing(p, floorRel, maxAge) {
+    var step = 0.02, prev = 0, t = 0;
+    while (t < maxAge) {
+      t = Math.min(maxAge, t + step);
+      var s = stateAt(p, t);
+      if (s.y >= floorRel && s.vy > 0) {
+        var lo = prev, hi = t;
+        for (var i = 0; i < 14; i++) {
+          var mid = (lo + hi) / 2;
+          if (stateAt(p, mid).y >= floorRel) hi = mid; else lo = mid;
+        }
+        return hi;
+      }
+      prev = t;
+    }
+    return null;
+  }
+
   function build() {
     var r = rng(fx.seed), P = [], D = fx.duration, loop = fx.mode === 'loop';
+    var floorRel = (fx.floorY - fx.oy) * fx.h;
     for (var i = 0; i < fx.count; i++) {
       var life = lerp(fx.lifeMin, Math.max(fx.lifeMin, fx.lifeMax), r());
       if (loop) life = Math.min(life, D);
@@ -5422,29 +5508,35 @@ document.addEventListener('keydown', function (e) {
         spin: (r() * 2 - 1) * fx.spin * Math.PI / 180, ph: r()
       });
     }
+
+    if (fx.floor) {
+      var kids = [], nS = Math.round(clamp(fx.splash, 0, 8)), cap = loop ? D : 10;
+      P.forEach(function (p) {
+        if (p.py >= floorRel) return;
+        var la = landing(p, floorRel, p.life);
+        if (la === null) return;
+        var st = stateAt(p, la);
+        p.life = Math.max(0.02, la);                       // dies when it hits the floor
+        for (var j = 0; j < nS; j++) {
+          var ang = -Math.PI / 2 + (r() * 2 - 1) * 1.2;
+          var spd = Math.hypot(st.vx, st.vy) * fx.splashPower * (0.4 + r() * 0.9) + 25;
+          kids.push({
+            tb: p.tb + la, life: Math.min(cap, 0.22 + r() * 0.3),
+            px: st.x, py: floorRel,
+            vx: Math.cos(ang) * spd + st.vx * 0.25, vy: Math.sin(ang) * spd,
+            sz: 0.6 + r() * 0.7, rot: 0, spin: 0, ph: r(),
+            g: Math.max(fx.gravity, 200), k: 0.4, plain: true,
+            ss: [fx.sizeStart * fx.splashSize, fx.sizeStart * fx.splashSize * 0.35]
+          });
+        }
+      });
+      P = P.concat(kids);
+    }
     return P;
   }
-  function stateAt(p, age) {
-    var k = fx.drag, g = fx.gravity, x, y, vx, vy;
-    if (k < 1e-4) {
-      x = p.px + p.vx * age; y = p.py + p.vy * age + 0.5 * g * age * age;
-      vx = p.vx; vy = p.vy + g * age;
-    } else {
-      var e = Math.exp(-k * age), gk = g / k;
-      x = p.px + p.vx * (1 - e) / k;
-      y = p.py + gk * age + (p.vy - gk) * (1 - e) / k;
-      vx = p.vx * e; vy = gk + (p.vy - gk) * e;
-    }
-    if (fx.wob) {
-      var w = TAU * (fx.wobFreq * age + p.ph);
-      x += fx.wob * Math.sin(w); y += fx.wob * 0.5 * Math.cos(w * 0.8);
-    }
-    if (fx.swirl) {
-      var sa = fx.swirl * age * Math.PI / 180, c = Math.cos(sa), s = Math.sin(sa);
-      var nx = x * c - y * s; y = x * s + y * c; x = nx;
-    }
-    return { x: x, y: y, vx: vx, vy: vy };
-  }
+
+  var liq = document.createElement('canvas');
+  var liqX = liq.getContext('2d', { willReadFrequently: true });
 
   function draw(c, t, w, h, o) {
     c.setTransform(1, 0, 0, 1, 0, 0);
@@ -5452,17 +5544,25 @@ document.addEventListener('keydown', function (e) {
     c.clearRect(0, 0, w, h);
     if (o.bg) { c.fillStyle = o.bg; c.fillRect(0, 0, w, h); }
     var ox = fx.ox * w, oy = fx.oy * h, D = fx.duration, loop = fx.mode === 'loop';
-    c.globalCompositeOperation = fx.blend;
+    var g = c;
+    if (fx.liquid) {
+      if (liq.width !== w || liq.height !== h) { liq.width = w; liq.height = h; }
+      g = liqX;
+      g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+      g.clearRect(0, 0, w, h);
+    } else {
+      g.globalCompositeOperation = fx.blend;
+    }
     for (var i = 0; i < parts.length; i++) {
       var p = parts[i];
       var age = loop ? (((t - p.tb) % D) + D) % D : t - p.tb;
       if (age < 0 || age > p.life) continue;
       var u = age / p.life, st = stateAt(p, age);
-      var a = fx.opacity;
+      var a = fx.liquid ? 1 : fx.opacity;
       if (fx.fadeIn > 0) a *= Math.min(1, u / fx.fadeIn);
       if (fx.fadeOut > 0) a *= Math.min(1, (1 - u) / fx.fadeOut);
       if (a <= 0.003) continue;
-      var size = lerp(fx.sizeStart, fx.sizeEnd, u) * p.sz;
+      var size = (p.ss ? lerp(p.ss[0], p.ss[1], u) : lerp(fx.sizeStart, fx.sizeEnd, u)) * p.sz;
       if (size < 0.2) continue;
       var spr = ramp[Math.min(ramp.length - 1, Math.floor(u * ramp.length))];
       var rot, sx = size, sy = size;
@@ -5471,17 +5571,38 @@ document.addEventListener('keydown', function (e) {
         sx = size * (1 + fx.stretch * Math.hypot(st.vx, st.vy) / 200);
       } else rot = p.rot + p.spin * age;
       var cs = Math.cos(rot), sn = Math.sin(rot);
-      c.globalAlpha = Math.min(1, a);
-      c.setTransform(cs * sx / SP, sn * sx / SP, -sn * sy / SP, cs * sy / SP, ox + st.x, oy + st.y);
-      c.drawImage(spr, -SP / 2, -SP / 2);
+      g.globalAlpha = Math.min(1, a);
+      g.setTransform(cs * sx / SP, sn * sx / SP, -sn * sy / SP, cs * sy / SP, ox + st.x, oy + st.y);
+      g.drawImage(spr, -SP / 2, -SP / 2);
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+
+    if (fx.liquid) {                       // goo pass: turn soft blobs into solid liquid
+      var im = liqX.getImageData(0, 0, w, h), dd = im.data;
+      var sf = Math.max(0.02, fx.gooS), lo = fx.gooT - sf / 2, hi = fx.gooT + sf / 2;
+      for (var n = 3; n < dd.length; n += 4) {
+        var al = dd[n] / 255;
+        if (al <= lo) dd[n] = 0;
+        else if (al >= hi) dd[n] = 255;
+        else { var q = (al - lo) / (hi - lo); dd[n] = Math.round(q * q * (3 - 2 * q) * 255); }
+      }
+      liqX.putImageData(im, 0, 0);
+      c.globalAlpha = fx.opacity; c.globalCompositeOperation = fx.blend;
+      c.drawImage(liq, 0, 0);
     }
     c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+
     if (o.guide) {
       c.strokeStyle = 'rgba(0,200,255,0.9)'; c.lineWidth = 1; c.setLineDash([4, 3]);
       c.beginPath(); c.moveTo(ox - 8, oy); c.lineTo(ox + 8, oy); c.moveTo(ox, oy - 8); c.lineTo(ox, oy + 8); c.stroke();
       if (fx.shape === 'circle' || fx.shape === 'ring') { c.beginPath(); c.arc(ox, oy, fx.er, 0, TAU); c.stroke(); }
       else if (fx.shape === 'line') { c.beginPath(); c.moveTo(ox - fx.er, oy); c.lineTo(ox + fx.er, oy); c.stroke(); }
       else if (fx.shape === 'rect') c.strokeRect(ox - fx.er, oy - fx.er, fx.er * 2, fx.er * 2);
+      if (fx.floor) {
+        c.strokeStyle = 'rgba(255,170,0,0.95)'; c.setLineDash([6, 4]);
+        var fy = fx.floorY * h;
+        c.beginPath(); c.moveTo(0, fy); c.lineTo(w, fy); c.stroke();
+      }
       c.setLineDash([]);
     }
   }
@@ -5673,6 +5794,7 @@ document.addEventListener('keydown', function (e) {
     var r = cv.getBoundingClientRect();
     fx.ox = clamp((e.clientX - r.left) / r.width, 0, 1);
     fx.oy = clamp((e.clientY - r.top) / r.height, 0, 1);
+    if (fx.floor) parts = build();
     paintNow();
   }
   cv.addEventListener('pointerdown', function (e) { cv.setPointerCapture(e.pointerId); dragging = true; setOrigin(e); });
@@ -5786,4 +5908,430 @@ document.addEventListener('keydown', function (e) {
   ctrls.sprite = ctrls.sprite || function () {};
   presetBtns[0].classList.add('on');
   fx = Object.assign({}, DEF, PRE[0][1]);
+})();
+
+// ======================================================
+// DAY 6: GRADIENT TOOL
+// ======================================================
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var say = function (m) { if (window.toast) window.toast(m); };
+  var clamp = function (x, a, b) { return Math.min(b, Math.max(a, x)); };
+
+  var G = { stops: [{ o: 0, c: '#2f6fed', a: 100 }, { o: 100, c: '#ff4d6d', a: 100 }], sel: 0, cx: 50, cy: 50, rad: 100 };
+  var forceGeom = false, prevType = fillTypeSel.value;
+
+  // ---------- styles ----------
+  var css = document.createElement('style');
+  css.textContent =
+    '#grad-ed{display:none;margin:2px 0 14px;padding:8px 8px 4px;border:1px solid #444;border-radius:8px;background:#262626}' +
+    '.gchk{background-color:#fff;background-image:var(--g),linear-gradient(45deg,#bbb 25%,transparent 25%,transparent 75%,#bbb 75%),linear-gradient(45deg,#bbb 25%,transparent 25%,transparent 75%,#bbb 75%);background-size:100% 100%,10px 10px,10px 10px;background-position:0 0,0 0,5px 5px}' +
+    '#gb-wrap{position:relative;height:54px;margin:4px 12px 8px}' +
+    '#gb{position:absolute;left:0;right:0;top:0;height:26px;border-radius:5px;border:1px solid #111;cursor:copy;touch-action:none}' +
+    '#gs-layer{position:absolute;left:0;right:0;top:28px;height:26px}' +
+    '.gs{position:absolute;top:0;width:26px;height:26px;margin-left:-13px;touch-action:none;cursor:grab}' +
+    '.gs i{display:block;width:16px;height:16px;margin:4px auto 0;border:2px solid #fff;border-radius:3px;box-shadow:0 0 0 1px #000}' +
+    '.gs.sel i{border-color:#ff9f1c;box-shadow:0 0 0 2px #000;transform:scale(1.2)}' +
+    '#gp{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}' +
+    '#gp button{width:46px;height:24px;padding:0;border:1px solid #555;border-radius:4px;cursor:pointer}' +
+    '.gh{position:absolute;display:none;z-index:9;width:16px;height:16px;transform:translate(-50%,-50%);border:3px solid #fff;box-shadow:0 0 0 2px #000;touch-action:none;cursor:move}' +
+    '.gh.a{border-radius:50%;background:#2f6fed}.gh.b{background:#ff9f1c}' +
+    '#gh-line{position:absolute;display:none;z-index:8;height:2px;background:#fff;box-shadow:0 0 0 1px #000;pointer-events:none;transform-origin:0 50%}' +
+    '@media (pointer:coarse){.gs{width:38px;height:36px;margin-left:-19px}#gb-wrap{height:64px}#gs-layer{height:36px}#gp button{width:56px;height:32px}.gh{width:26px;height:26px}}';
+  document.head.appendChild(css);
+
+  // ---------- colour helpers ----------
+  function rgbOf(h) { var n = parseInt(String(h).slice(1), 16) || 0; return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function hexOf(r) { return '#' + r.map(function (v) { return ('0' + Math.round(v).toString(16)).slice(-2); }).join(''); }
+  function sorted() { return G.stops.slice().sort(function (a, b) { return a.o - b.o; }); }
+  function cssGrad(list) {
+    return 'linear-gradient(to right,' + list.map(function (s) {
+      return 'rgba(' + rgbOf(s.c).join(',') + ',' + (s.a / 100) + ') ' + s.o + '%';
+    }).join(',') + ')';
+  }
+  function colorAt(pos) {
+    var st = sorted(), i = 0;
+    if (pos <= st[0].o) return { c: st[0].c, a: st[0].a };
+    if (pos >= st[st.length - 1].o) return { c: st[st.length - 1].c, a: st[st.length - 1].a };
+    while (i < st.length - 1 && st[i + 1].o <= pos) i++;
+    var A = st[i], B = st[i + 1], t = (pos - A.o) / ((B.o - A.o) || 1);
+    var ra = rgbOf(A.c), rb = rgbOf(B.c);
+    return { c: hexOf([0, 1, 2].map(function (n) { return ra[n] + (rb[n] - ra[n]) * t; })), a: Math.round(A.a + (B.a - A.a) * t) };
+  }
+
+  // ---------- item helpers ----------
+  function firstLeaf(item) { while (item && item.className === 'Group' && item.children.length) item = item.children[0]; return item; }
+  function leavesOf(item, out) {
+    out = out || [];
+    if (item.className === 'Group') item.children.forEach(function (c) { leavesOf(c, out); });
+    else out.push(item);
+    return out;
+  }
+  function gradOf(item) { var l = firstLeaf(item), fc = l && l.fillColor; return (fc && fc.type === 'gradient') ? fc : null; }
+  function isGrad() { return fillTypeSel.value === 'linear' || fillTypeSel.value === 'radial'; }
+
+  function stopsForPaper() {
+    return sorted().map(function (s, i) {
+      var c = new paper.Color(s.c); c.alpha = s.a / 100;
+      return [c, clamp(s.o / 100, i === 0 ? 0 : 0.001, 1)];
+    });
+  }
+  function defaultGeom(item, radial) {
+    var b = item.bounds;
+    if (radial) {
+      var o = new paper.Point(b.x + b.width * G.cx / 100, b.y + b.height * G.cy / 100);
+      var r = Math.max(Math.max(b.width, b.height) / 2 * G.rad / 100, 1);
+      return [o, o.add(new paper.Point(r, 0))];
+    }
+    var a = (Number(gradAngleInput.value) || 0) * Math.PI / 180;
+    var dir = new paper.Point(Math.cos(a), Math.sin(a));
+    var len = Math.abs(b.width * dir.x) + Math.abs(b.height * dir.y);
+    return [b.center.subtract(dir.multiply(len / 2)), b.center.add(dir.multiply(len / 2))];
+  }
+
+  // the app's fill builder now uses the stop list
+  makeFill = function (item) {
+    var type = fillTypeSel.value;
+    if (type === 'none') return null;
+    if (type === 'solid') return colorWithAlpha(fillInput.value, Number(fillOpInput.value));
+    var radial = type === 'radial', fc = item.fillColor, geo;
+    if (!forceGeom && fc && fc.type === 'gradient' && !!fc.gradient.radial === radial && fc.origin && fc.destination) {
+      geo = [new paper.Point(fc.origin.x, fc.origin.y), new paper.Point(fc.destination.x, fc.destination.y)];
+    } else geo = defaultGeom(item, radial);
+    return { gradient: { stops: stopsForPaper(), radial: radial }, origin: geo[0], destination: geo[1] };
+  };
+
+  // ---------- editor panel ----------
+  var typeRow = fillTypeSel.closest('.prop-row');
+  var ed = document.createElement('div');
+  ed.id = 'grad-ed';
+  ed.innerHTML =
+    '<div id="gb-wrap"><div id="gb" class="gchk"></div><div id="gs-layer"></div></div>' +
+    '<div class="prop-row">Stop color <input type="color" id="gs-color"></div>' +
+    '<div class="prop-row">Opacity % <input type="number" id="gs-alpha" min="0" max="100"></div>' +
+    '<div class="prop-row">Position % <input type="number" id="gs-pos" min="0" max="100" step="1"></div>' +
+    '<div class="layer-actions"><button id="gs-del">Delete stop</button><button id="gs-rev">Reverse</button><button id="gs-even">Even out</button></div>' +
+    '<div id="gr-rad" style="display:none">' +
+    '<div class="prop-row">Center X % <input type="number" id="gr-cx" min="-100" max="200" value="50"></div>' +
+    '<div class="prop-row">Center Y % <input type="number" id="gr-cy" min="-100" max="200" value="50"></div>' +
+    '<div class="prop-row">Radius % <input type="number" id="gr-r" min="1" max="500" value="100"></div></div>' +
+    '<div id="gp"></div>' +
+    '<p class="hint">Tap the bar to add a stop. Drag a stop to move it. Each stop has its own opacity. For gradients, Fill opacity is not used. Press D for the Gradient tool, click a shape and drag on the canvas.</p>';
+  typeRow.parentNode.insertBefore(ed, typeRow.nextSibling);
+
+  var gb = $('gb'), layer = $('gs-layer'), gsColor = $('gs-color'), gsAlpha = $('gs-alpha'), gsPos = $('gs-pos');
+  var markers = [];
+
+  function show(el, on) { var row = el.closest('.prop-row'); if (row) row.style.display = on ? '' : 'none'; }
+  function syncVisibility() {
+    var g = isGrad(), rad = fillTypeSel.value === 'radial';
+    ed.style.display = g ? 'block' : 'none';
+    $('gr-rad').style.display = rad ? 'block' : 'none';
+    show(fill2Input, false);                       // replaced by the stop editor
+    show(fillInput, !g);
+    show(fillOpInput, !g);
+    show(gradAngleInput, fillTypeSel.value === 'linear');
+  }
+
+  function light() {
+    gb.style.setProperty('--g', cssGrad(sorted()));
+    markers.forEach(function (m, i) {
+      var s = G.stops[i];
+      m.style.left = s.o + '%';
+      m.firstChild.style.background = s.c;
+    });
+  }
+  function fillInputs() {
+    var s = G.stops[G.sel];
+    if (!s) return;
+    gsColor.value = s.c;
+    if (document.activeElement !== gsAlpha) gsAlpha.value = s.a;
+    if (document.activeElement !== gsPos) gsPos.value = Math.round(s.o * 10) / 10;
+    $('gr-cx').value = Math.round(G.cx); $('gr-cy').value = Math.round(G.cy); $('gr-r').value = Math.round(G.rad);
+  }
+  function selectStop(i) {
+    G.sel = clamp(i, 0, G.stops.length - 1);
+    markers.forEach(function (m, n) { m.classList.toggle('sel', n === G.sel); });
+    fillInputs();
+  }
+  function applyLive(final) {
+    if (!selection.length) { if (final) say('Select a shape first, then edit its gradient'); return; }
+    selection.forEach(paintFill);
+    forceRedraw();
+    if (final) saveState();
+  }
+
+  function buildMarkers() {
+    layer.innerHTML = ''; markers = [];
+    G.stops.forEach(function (s, i) {
+      var m = document.createElement('div');
+      m.className = 'gs'; m.innerHTML = '<i></i>';
+      m.addEventListener('pointerdown', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        m.setPointerCapture(e.pointerId);
+        selectStop(i);
+        var r = gb.getBoundingClientRect(), moved = false;
+        function mv(ev) {
+          moved = true;
+          G.stops[i].o = Math.round(clamp((ev.clientX - r.left) / r.width * 100, 0, 100) * 10) / 10;
+          light(); fillInputs(); applyLive(false);
+        }
+        function up() {
+          m.removeEventListener('pointermove', mv);
+          m.removeEventListener('pointerup', up);
+          m.removeEventListener('pointercancel', up);
+          if (moved) applyLive(true);
+        }
+        m.addEventListener('pointermove', mv);
+        m.addEventListener('pointerup', up);
+        m.addEventListener('pointercancel', up);
+      });
+      layer.appendChild(m); markers.push(m);
+    });
+    light(); selectStop(G.sel);
+  }
+
+  gb.addEventListener('pointerdown', function (e) {       // tap the bar = add a stop
+    e.preventDefault();
+    var r = gb.getBoundingClientRect();
+    var pos = Math.round(clamp((e.clientX - r.left) / r.width * 100, 0, 100) * 10) / 10;
+    var c = colorAt(pos);
+    G.stops.push({ o: pos, c: c.c, a: c.a });
+    G.sel = G.stops.length - 1;
+    buildMarkers(); applyLive(true);
+  });
+
+  gsColor.addEventListener('click', function (e) {
+    e.preventDefault();
+    var s = G.stops[G.sel];
+    ColorPicker.open(gsColor, s.c, s.a, function (hex, a, final) {
+      s.c = hex; s.a = a; fillInputs(); light(); applyLive(final);
+    }, { alpha: true });
+  });
+  gsAlpha.addEventListener('input', function () {
+    G.stops[G.sel].a = clamp(Number(gsAlpha.value) || 0, 0, 100); light(); applyLive(false);
+  });
+  gsAlpha.addEventListener('change', function () { applyLive(true); });
+  gsPos.addEventListener('input', function () {
+    G.stops[G.sel].o = clamp(Number(gsPos.value) || 0, 0, 100); light(); applyLive(false);
+  });
+  gsPos.addEventListener('change', function () { applyLive(true); });
+
+  wire('gs-del', function () {
+    if (G.stops.length <= 2) { say('A gradient needs at least 2 stops'); return; }
+    G.stops.splice(G.sel, 1);
+    G.sel = Math.min(G.sel, G.stops.length - 1);
+    buildMarkers(); applyLive(true);
+  });
+  wire('gs-rev', function () { G.stops.forEach(function (s) { s.o = Math.round((100 - s.o) * 10) / 10; }); light(); fillInputs(); applyLive(true); });
+  wire('gs-even', function () {
+    var st = sorted();
+    st.forEach(function (s, i) { s.o = Math.round(i * 1000 / (st.length - 1)) / 10; });
+    light(); fillInputs(); applyLive(true);
+  });
+
+  [['gr-cx', 'cx'], ['gr-cy', 'cy'], ['gr-r', 'rad']].forEach(function (p) {
+    var el = $(p[0]);
+    el.addEventListener('input', function () {
+      G[p[1]] = Number(el.value) || 0;
+      forceGeom = true; applyLive(false); forceGeom = false;
+    });
+    el.addEventListener('change', function () { if (selection.length) saveState(); });
+  });
+  gradAngleInput.addEventListener('input', function () {
+    if (!isGrad()) return;
+    forceGeom = true; applyLive(false); forceGeom = false;
+  });
+
+  // presets
+  var PRESETS = [
+    ['Sunset', [[0, '#ff512f', 100], [50, '#f09819', 100], [100, '#ffe259', 100]]],
+    ['Ocean', [[0, '#1c6dd0', 100], [100, '#6dd5ed', 100]]],
+    ['Fire', [[0, '#ffe259', 100], [40, '#ff8a1f', 100], [100, '#a40000', 100]]],
+    ['Rainbow', [[0, '#ff0000', 100], [20, '#ffd400', 100], [40, '#00c853', 100], [60, '#00b8ff', 100], [80, '#3d5afe', 100], [100, '#d500f9', 100]]],
+    ['Gold', [[0, '#bf953f', 100], [30, '#fcf6ba', 100], [60, '#b38728', 100], [100, '#fbf5b7', 100]]],
+    ['Chrome', [[0, '#ffffff', 100], [45, '#9aa4b2', 100], [55, '#3b4452', 100], [100, '#c8d0da', 100]]],
+    ['Neon', [[0, '#00f5ff', 100], [100, '#ff00e5', 100]]],
+    ['White to clear', [[0, '#ffffff', 100], [100, '#ffffff', 0]]],
+    ['Black to clear', [[0, '#000000', 100], [100, '#000000', 0]]]
+  ];
+  PRESETS.forEach(function (p) {
+    var b = document.createElement('button');
+    b.title = p[0]; b.className = 'gchk';
+    b.style.setProperty('--g', cssGrad(p[1].map(function (s) { return { o: s[0], c: s[1], a: s[2] }; })));
+    b.addEventListener('click', function () {
+      G.stops = p[1].map(function (s) { return { o: s[0], c: s[1], a: s[2] }; });
+      G.sel = 0; buildMarkers(); applyLive(true);
+    });
+    $('gp').appendChild(b);
+  });
+
+  // ---------- fill type switching ----------
+  fillTypeSel.addEventListener('change', function () {
+    var t = fillTypeSel.value, was = prevType;
+    prevType = t;
+    syncVisibility();
+    if ((t === 'linear' || t === 'radial') && was !== 'linear' && was !== 'radial') {
+      G.stops = [
+        { o: 0, c: fillInput.value, a: Number(fillOpInput.value) || 100 },
+        { o: 100, c: fill2Input.value, a: 100 }
+      ];
+      G.sel = 0; buildMarkers();
+      forceGeom = true; applyLive(true); forceGeom = false;
+    }
+  });
+
+  // ---------- read a selected shape's gradient into the editor ----------
+  function loadFromColor(fc, leaf) {
+    var stops = fc.gradient.stops, n = stops.length;
+    G.stops = stops.map(function (s, i) {
+      var c = s.color;
+      return {
+        o: Math.round((s.offset == null ? i / Math.max(1, n - 1) : s.offset) * 1000) / 10,
+        c: c.toCSS(true), a: Math.round((c.alpha == null ? 1 : c.alpha) * 100)
+      };
+    });
+    var b = leaf.bounds;
+    if (fc.gradient.radial && fc.origin && fc.destination && b.width > 0 && b.height > 0) {
+      G.cx = (fc.origin.x - b.x) / b.width * 100;
+      G.cy = (fc.origin.y - b.y) / b.height * 100;
+      G.rad = fc.origin.getDistance(fc.destination) / (Math.max(b.width, b.height) / 2) * 100;
+    } else if (fc.origin && fc.destination) {
+      gradAngleInput.value = Math.round(fc.destination.subtract(fc.origin).angle);
+    }
+    G.sel = 0;
+    buildMarkers();
+  }
+  var _sync = syncPanelFromItem;
+  syncPanelFromItem = function (item) {
+    _sync(item);
+    prevType = fillTypeSel.value;
+    var fc = gradOf(item);
+    if (fc) loadFromColor(fc, firstLeaf(item));
+    syncVisibility();
+  };
+
+  // ---------- Gradient tool (draw the direction on the canvas) ----------
+  tools.gradient = new paper.Tool();
+  var gTargets = [], gStart = null, gMoved = false;
+
+  tools.gradient.onMouseDown = function (e) {
+    gMoved = false; gStart = e.point;
+    var hit = paper.project.hitTest(e.point, { fill: true, stroke: true, tolerance: 4 });
+    if (hit) {
+      var top = topLevelItem(hit.item);
+      if (selection.indexOf(top) < 0) setSelection([top]);
+    }
+    gTargets = selection.slice();
+    if (!gTargets.length) say('Click a shape first, then drag to set the gradient');
+  };
+  tools.gradient.onMouseDrag = function (e) {
+    if (!gTargets.length) return;
+    if (!gMoved && e.point.getDistance(gStart) < 3) return;
+    if (!gMoved) {
+      gMoved = true;
+      if (!isGrad()) {                                   // solid -> gradient: colour fades to clear
+        var l = firstLeaf(gTargets[0]), fc = l && l.fillColor, hex = fillInput.value, al = 100;
+        if (fc && fc.type !== 'gradient') { hex = fc.toCSS(true); al = Math.round((fc.alpha == null ? 1 : fc.alpha) * 100); }
+        G.stops = [{ o: 0, c: hex, a: al }, { o: 100, c: hex, a: 0 }];
+        G.sel = 0;
+        fillTypeSel.value = 'linear'; prevType = 'linear';
+        buildMarkers(); syncVisibility();
+      }
+    }
+    var a = gStart, b = e.point, radial = fillTypeSel.value === 'radial';
+    if (e.modifiers.shift && !radial) {
+      var v = b.subtract(a), ang = Math.round(v.angle / 45) * 45;
+      b = a.add(new paper.Point({ length: v.length, angle: ang }));
+    }
+    gTargets.forEach(function (it) {
+      leavesOf(it).forEach(function (l) {
+        if (l.className === 'Raster') return;
+        l.fillColor = { gradient: { stops: stopsForPaper(), radial: radial }, origin: a, destination: b };
+      });
+    });
+    forceRedraw();
+  };
+  tools.gradient.onMouseUp = function () {
+    if (gMoved) saveState();
+    gTargets = []; gMoved = false;
+  };
+
+  var gtBtn = document.createElement('button');
+  gtBtn.className = 'tool-btn'; gtBtn.dataset.tool = 'gradient'; gtBtn.textContent = '◐';
+  gtBtn.title = 'Gradient tool (D). Click a shape, then drag to set the gradient direction';
+  $('toolbar').appendChild(gtBtn);
+  gtBtn.addEventListener('click', function () { setTool('gradient'); });
+  var _setTool = setTool;
+  setTool = function (name) {
+    _setTool(name);
+    gtBtn.classList.toggle('active', name === 'gradient');
+  };
+  document.addEventListener('keydown', function (e) {
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key.toLowerCase() === 'd') setTool('gradient');
+  });
+
+  // ---------- on-canvas handles (drag the start / end dots) ----------
+  var ghA = document.createElement('div'), ghB = document.createElement('div'), ghL = document.createElement('div');
+  ghA.className = 'gh a'; ghB.className = 'gh b'; ghL.id = 'gh-line';
+  ghA.title = 'Gradient start / center'; ghB.title = 'Gradient end';
+  canvasArea.appendChild(ghL); canvasArea.appendChild(ghA); canvasArea.appendChild(ghB);
+
+  function dragDot(el, which) {
+    el.addEventListener('pointerdown', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      el.setPointerCapture(e.pointerId);
+      var moved = false;
+      function mv(ev) {
+        var p = mouseToProject(ev);
+        moved = true;
+        selection.forEach(function (it) {
+          leavesOf(it).forEach(function (l) {
+            var fc = l.fillColor;
+            if (!fc || fc.type !== 'gradient') return;
+            if (which === 'a') fc.origin = p; else fc.destination = p;
+          });
+        });
+        forceRedraw();
+      }
+      function up() {
+        el.removeEventListener('pointermove', mv);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        if (moved) saveState();
+      }
+      el.addEventListener('pointermove', mv);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    });
+  }
+  dragDot(ghA, 'a'); dragDot(ghB, 'b');
+
+  function updateHandlesG() {
+    var fc = (currentToolName === 'gradient' && selection.length) ? gradOf(selection[0]) : null;
+    if (!fc || !fc.origin || !fc.destination) {
+      ghA.style.display = ghB.style.display = ghL.style.display = 'none';
+      return;
+    }
+    var a = paper.view.projectToView(fc.origin), b = paper.view.projectToView(fc.destination);
+    ghA.style.display = ghB.style.display = ghL.style.display = 'block';
+    ghA.style.left = a.x + 'px'; ghA.style.top = a.y + 'px';
+    ghB.style.left = b.x + 'px'; ghB.style.top = b.y + 'px';
+    var dx = b.x - a.x, dy = b.y - a.y;
+    ghL.style.left = a.x + 'px'; ghL.style.top = a.y + 'px';
+    ghL.style.width = Math.hypot(dx, dy) + 'px';
+    ghL.style.transform = 'rotate(' + Math.atan2(dy, dx) + 'rad)';
+  }
+  var _tick = window.tickTimeline;
+  window.tickTimeline = function (e) {
+    if (_tick) _tick(e);
+    if (fillTypeSel.value !== prevType) { prevType = fillTypeSel.value; syncVisibility(); }
+    updateHandlesG();
+  };
+
+  buildMarkers();
+  syncVisibility();
 })();
