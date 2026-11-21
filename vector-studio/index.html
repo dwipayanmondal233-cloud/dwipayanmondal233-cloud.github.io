@@ -49,6 +49,7 @@
       <button class="tool-btn" data-tool="node" title="Node edit (N). Double-click a line to add a point. Double-click a point (or press Delete) to remove it">◇</button>
       <button class="tool-btn active" data-tool="rect" title="Rectangle (R)">▭</button>
       <button class="tool-btn" data-tool="circle" title="Circle (C)">◯</button>
+      <button class="tool-btn" data-tool="ellipse" title="Ellipse / Arc (O)">⬭</button>     
       <button class="tool-btn" data-tool="star" title="Star (S)">★</button>
       <button class="tool-btn" data-tool="line" title="Line (L)">╱</button>
       <button class="tool-btn" data-tool="brush" title="Brush / Pencil (B)">✎</button>
@@ -117,6 +118,15 @@
           <label class="prop-row">Stroke width
             <input type="number" id="stroke-width" value="2" min="0" max="50">
           </label>
+
+          <div class="layer-actions">
+            <button id="stroke-minus" title="Thinner (key: -)">− Thinner</button>
+            <button id="stroke-plus" title="Thicker (key: +)">＋ Thicker</button>
+          </div>
+          <label class="prop-row">Step px
+            <input type="number" id="stroke-step" value="1" min="0.5" max="20" step="0.5">
+          </label>
+
 
           <div class="layer-actions">
             <button id="swap-colors" title="Swap fill and stroke colors">⇄ Swap fill / stroke</button>
@@ -228,6 +238,39 @@
           <label class="prop-row">Corner radius px
             <input type="number" id="rect-radius" value="0" min="0" max="500">
           </label>
+
+          <h3 class="section-title">Ellipse / arc</h3>
+          <label class="prop-row">Type
+            <select id="ell-type">
+              <option value="whole">Whole ellipse</option>
+              <option value="slice">Slice (pie)</option>
+              <option value="arc">Arc (open)</option>
+              <option value="chord">Chord</option>
+            </select>
+          </label>
+          <label class="prop-row">Start °
+            <input type="number" id="ell-start" value="0" min="-720" max="720">
+          </label>
+          <label class="prop-row">End °
+            <input type="number" id="ell-end" value="270" min="-720" max="720">
+          </label>
+          <label class="prop-row">Radius X
+            <input type="number" id="ell-rx" min="1">
+          </label>
+          <label class="prop-row">Radius Y
+            <input type="number" id="ell-ry" min="1">
+          </label>
+          <label class="prop-row">Circle (1:1)
+            <input type="checkbox" id="ell-circle">
+          </label>
+          <label class="prop-row">From center
+            <input type="checkbox" id="ell-center">
+          </label>
+          <div class="layer-actions">
+            <button id="ell-whole">Make whole</button>
+            <button id="ell-flip">Swap start/end</button>
+          </div>
+          <p class="hint">Ellipse tool (O): drag to draw. After drawing, the shape stays selected, so change Type and the angles right away. Select it later to edit again. Circle (1:1) and From center are the tablet versions of Shift and Alt.</p>          
 
           <h3 class="section-title">Star &amp; spray</h3>
           <label class="prop-row">Star points

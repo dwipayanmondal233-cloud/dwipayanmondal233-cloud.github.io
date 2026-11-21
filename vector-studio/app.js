@@ -4900,3 +4900,890 @@ document.addEventListener('keydown', function (e) {
   // runs every frame, next to the existing onFrame handler
   paper.view.on('frame', refreshMark);
 })();
+
+// ======================================================
+// DAY 5: STROKE + / - BUTTONS
+// ======================================================
+(function () {
+  widthInput.max = 200;
+  var stepEl = document.getElementById('stroke-step');
+  function step() { return Number(stepEl.value) || 1; }
+  function bump(d) {
+    var v = Math.max(0, Math.min(200, Math.round(((Number(widthInput.value) || 0) + d) * 10) / 10));
+    widthInput.value = v;
+    widthInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  function hold(id, sign) {
+    var el = document.getElementById(id), timer = null, rep = null, active = false;
+    if (!el) return;
+    function stop() {
+      clearTimeout(timer); clearInterval(rep);
+      if (active) { active = false; widthInput.dispatchEvent(new Event('change', { bubbles: true })); }
+    }
+    el.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      active = true;
+      bump(sign * step());
+      timer = setTimeout(function () {
+        rep = setInterval(function () { bump(sign * step()); }, 70);
+      }, 420);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { el.addEventListener(ev, stop); });
+  }
+  hold('stroke-minus', -1);
+  hold('stroke-plus', 1);
+
+  document.addEventListener('keydown', function (e) {
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === '-') { bump(-step()); widthInput.dispatchEvent(new Event('change', { bubbles: true })); }
+    if (e.key === '=' || e.key === '+') { bump(step()); widthInput.dispatchEvent(new Event('change', { bubbles: true })); }
+  });
+})();
+// ======================================================
+// DAY 5: ELLIPSE / ARC TOOL
+// ======================================================
+(function () {
+  tools.ellipse = new paper.Tool();
+  var $ = function (id) { return document.getElementById(id); };
+  var ellType = $('ell-type'), ellStart = $('ell-start'), ellEnd = $('ell-end');
+  var ellRx = $('ell-rx'), ellRy = $('ell-ry'), ellCircle = $('ell-circle'), ellCenter = $('ell-center');
+  var DEG = Math.PI / 180;
+  var r2 = function (v) { return Math.round(v * 100) / 100; };
+
+  // unit-circle arc from angle a0 to a1 (radians, a1 > a0), split in quarter turns
+  function arcSegments(a0, a1) {
+    var span = a1 - a0;
+    var n = Math.max(1, Math.ceil(span / (Math.PI / 2) - 1e-9));
+    var d = span / n, k = 4 / 3 * Math.tan(d / 4), out = [];
+    for (var i = 0; i <= n; i++) {
+      var a = a0 + d * i, c = Math.cos(a), s = Math.sin(a);
+      var tan = new paper.Point(-s, c);
+      out.push(new paper.Segment(
+        new paper.Point(c, s),
+        i === 0 ? null : tan.multiply(-k),
+        i === n ? null : tan.multiply(k)
+      ));
+    }
+    return out;
+  }
+
+  // build the real path segments from the saved ellipse settings
+  function ellBuild(e) {
+    var M = mxFrom(e.M), L = new paper.Matrix(M.a, M.b, M.c, M.d, 0, 0);
+    var P = function (p) { return M.transform(p); };
+    var V = function (p) { return L.transform(p); };
+    var span = (((e.end - e.start) % 360) + 360) % 360;
+    var whole = e.type === 'whole' || span < 0.01;
+    var segs = [], closed;
+    if (whole) {
+      var k = 0.5522847498;
+      [[1, 0], [0, 1], [-1, 0], [0, -1]].forEach(function (b) {
+        var t = new paper.Point(-b[1], b[0]).multiply(k);
+        segs.push(new paper.Segment(P(new paper.Point(b[0], b[1])), V(t.multiply(-1)), V(t)));
+      });
+      closed = true;
+    } else {
+      var a0 = e.start * DEG;
+      arcSegments(a0, a0 + span * DEG).forEach(function (s) {
+        segs.push(new paper.Segment(P(s.point), V(s.handleIn), V(s.handleOut)));
+      });
+      closed = e.type !== 'arc';
+      if (e.type === 'slice') segs.push(new paper.Segment(P(new paper.Point(0, 0))));
+    }
+    return { segs: segs, closed: closed };
+  }
+
+  function makeEllipse(cx, cy, rx, ry) {
+    var e = {
+      type: ellType.value,
+      start: Number(ellStart.value) || 0,
+      end: Number(ellEnd.value) || 0,
+      M: mxArr(new paper.Matrix(rx, 0, 0, ry, cx, cy))
+    };
+    var b = ellBuild(e);
+    var path = new paper.Path({
+      segments: b.segs, closed: b.closed,
+      fillColor: style.fill, strokeColor: style.stroke, strokeWidth: style.strokeWidth
+    });
+    e.n = path.segments.length;
+    path.data.ell = e;
+    return path;
+  }
+
+  function ellOf(item) {
+    return (item && item.className === 'Path' && item.data && item.data.ell) ? item : null;
+  }
+
+  function rebuildEllipse(path) {
+    var e = path.data && path.data.ell;
+    if (!e) return false;
+    if (path.segments.length !== e.n) { delete path.data.ell; return false; }  // edited by hand: forget
+    var b = ellBuild(e);
+    path.segments = b.segs;
+    path.closed = b.closed;
+    e.n = path.segments.length;
+    return true;
+  }
+
+  // keep the saved ellipse in step when the shape is moved / scaled / rotated
+  (function () {
+    var prev = paper.Item.prototype.transform;
+    paper.Item.prototype.transform = function (matrix) {
+      var d = this.data;
+      if (d && d.ell && matrix && !matrix.isIdentity()) {
+        d.ell.M = mxArr(matrix.clone().append(mxFrom(d.ell.M)));
+      }
+      return prev.apply(this, arguments);
+    };
+  })();
+
+  // editing points by hand turns it into an ordinary path
+  var _clearRound = clearRound;
+  clearRound = function (path) {
+    _clearRound(path);
+    if (path && path.data) delete path.data.ell;
+  };
+
+  // show the selected ellipse's values in the panel
+  function syncEllipsePanel(item) {
+    var p = ellOf(item);
+    if (!p) return;
+    var e = p.data.ell, M = mxFrom(e.M);
+    ellType.value = e.type;
+    ellStart.value = r2(e.start);
+    ellEnd.value = r2(e.end);
+    ellRx.value = r2(Math.hypot(M.a, M.b));
+    ellRy.value = r2(Math.hypot(M.c, M.d));
+  }
+  var _sync = syncPanelFromItem;
+  syncPanelFromItem = function (item) { _sync(item); syncEllipsePanel(item); };
+
+  function applyControls(which) {
+    if ((which === 'start' || which === 'end') && ellType.value === 'whole') ellType.value = 'slice';
+    var changed = false;
+    selection.forEach(function (it) {
+      var p = ellOf(it);
+      if (!p) return;
+      var e = p.data.ell;
+      if (which === 'rx' || which === 'ry') {
+        var M = mxFrom(e.M);
+        var rx0 = Math.hypot(M.a, M.b) || 1, ry0 = Math.hypot(M.c, M.d) || 1;
+        if (which === 'rx') {
+          var f = Math.max(1, Number(ellRx.value) || 1) / rx0;
+          e.M = mxArr(new paper.Matrix(M.a * f, M.b * f, M.c, M.d, M.tx, M.ty));
+        } else {
+          var g = Math.max(1, Number(ellRy.value) || 1) / ry0;
+          e.M = mxArr(new paper.Matrix(M.a, M.b, M.c * g, M.d * g, M.tx, M.ty));
+        }
+      } else {
+        e.type = ellType.value;
+        e.start = Number(ellStart.value) || 0;
+        e.end = Number(ellEnd.value) || 0;
+      }
+      if (rebuildEllipse(p)) changed = true;
+    });
+    return changed;
+  }
+  function anyEllipseSelected() { return selection.some(ellOf); }
+
+  ellType.addEventListener('change', function () { if (applyControls('type')) saveState(); });
+  [['start', ellStart], ['end', ellEnd], ['rx', ellRx], ['ry', ellRy]].forEach(function (p) {
+    p[1].addEventListener('input', function () { applyControls(p[0]); });
+    p[1].addEventListener('change', function () { if (anyEllipseSelected()) saveState(); });
+  });
+  wire('ell-whole', function () {
+    ellType.value = 'whole';
+    if (applyControls('type')) saveState();
+  });
+  wire('ell-flip', function () {
+    var s = ellStart.value; ellStart.value = ellEnd.value; ellEnd.value = s;
+    if (applyControls('start')) saveState();
+  });
+
+  // ----- the tool -----
+  var p0 = null;
+  tools.ellipse.onMouseDown = function (event) { p0 = event.point; };
+  tools.ellipse.onMouseDrag = function (event) {
+    if (!p0) return;
+    if (currentShape) currentShape.remove();
+    var dx = event.point.x - p0.x, dy = event.point.y - p0.y;
+    if (ellCircle.checked || event.modifiers.shift) {
+      var m = Math.max(Math.abs(dx), Math.abs(dy));
+      dx = dx < 0 ? -m : m;
+      dy = dy < 0 ? -m : m;
+    }
+    var cx, cy, rx, ry;
+    if (ellCenter.checked || event.modifiers.option) {
+      cx = p0.x; cy = p0.y; rx = Math.abs(dx); ry = Math.abs(dy);
+    } else {
+      cx = p0.x + dx / 2; cy = p0.y + dy / 2; rx = Math.abs(dx) / 2; ry = Math.abs(dy) / 2;
+    }
+    if (rx < 0.5 || ry < 0.5) { currentShape = null; return; }
+    currentShape = makeEllipse(cx, cy, rx, ry);
+  };
+  tools.ellipse.onMouseUp = function () {
+    if (currentShape) {
+      registerItem(currentShape, 'Ellipse', '⬭');
+      var shape = currentShape;
+      currentShape = null;
+      setSelection([shape]);        // stays selected so you can edit the angles
+      saveState();
+    }
+    p0 = null;
+    renderLayers();
+  };
+
+  document.addEventListener('keydown', function (e) {
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key.toLowerCase() === 'o') setTool('ellipse');
+  });
+})();
+
+// ======================================================
+// DAY 5: VFX STUDIO
+// ======================================================
+(function () {
+  var say = function (m) { if (window.toast) window.toast(m); };
+  var clamp = function (x, a, b) { return Math.min(b, Math.max(a, x)); };
+  var lerp = function (a, b, t) { return a + (b - a) * t; };
+  var SP = 128, KR = 24, TAU = Math.PI * 2;
+
+  // ---------- defaults + presets ----------
+  var DEF = {
+    mode: 'loop', count: 80, duration: 1, fps: 24, seed: 7, burstSpread: 0.05,
+    w: 256, h: 256, ox: 0.5, oy: 0.5,
+    shape: 'point', er: 20, radial: false, angle: -90, spread: 30,
+    speedMin: 40, speedMax: 120, gravity: 0, drag: 0, lifeMin: 0.5, lifeMax: 1,
+    swirl: 0, wob: 0, wobFreq: 1.5,
+    sprite: 'soft', sizeStart: 24, sizeEnd: 4, sizeVar: 0.3, rotVar: 0, spin: 0, stretch: 0,
+    c0: '#ffffff', c1: '#ffd36b', c2: '#ff4a1a', fadeIn: 0.1, fadeOut: 0.5, opacity: 1,
+    blend: 'lighter', tint: false
+  };
+  var PRE = [
+    ['🔥 Fire', { count: 110, duration: 1, oy: 0.82, shape: 'circle', er: 14, angle: -90, spread: 24,
+      speedMin: 35, speedMax: 95, gravity: -60, drag: 0.8, lifeMin: 0.5, lifeMax: 1, sprite: 'flame',
+      sizeStart: 34, sizeEnd: 6, sizeVar: 0.4, wob: 5, wobFreq: 2, c0: '#fff4b0', c1: '#ff8a1f', c2: '#4a0d00',
+      fadeIn: 0.08, fadeOut: 0.55 }],
+    ['💨 Smoke', { count: 36, duration: 3, oy: 0.8, shape: 'circle', er: 10, angle: -90, spread: 28,
+      speedMin: 14, speedMax: 36, gravity: -8, drag: 0.3, lifeMin: 2, lifeMax: 3, sprite: 'smoke',
+      sizeStart: 26, sizeEnd: 88, sizeVar: 0.3, rotVar: 180, spin: 15, wob: 6, wobFreq: 0.5,
+      c0: '#9a9a9a', c1: '#6a6a6a', c2: '#2e2e2e', fadeIn: 0.2, fadeOut: 0.65, opacity: 0.55, blend: 'source-over' }],
+    ['✨ Sparks', { count: 70, duration: 1, oy: 0.7, angle: -90, spread: 110, speedMin: 90, speedMax: 260,
+      gravity: 420, drag: 0.6, lifeMin: 0.35, lifeMax: 0.95, sprite: 'circle', sizeStart: 5, sizeEnd: 1.5,
+      sizeVar: 0.4, stretch: 1.6, c0: '#fffbe0', c1: '#ffc23a', c2: '#ff3d00', fadeIn: 0, fadeOut: 0.35 }],
+    ['💥 Explosion', { mode: 'burst', count: 170, duration: 1, burstSpread: 0.04, shape: 'circle', er: 8,
+      radial: true, angle: 0, spread: 0, speedMin: 40, speedMax: 330, gravity: 80, drag: 3.2,
+      lifeMin: 0.25, lifeMax: 0.85, sprite: 'soft', sizeStart: 46, sizeEnd: 8, sizeVar: 0.5,
+      c0: '#fff8c8', c1: '#ff8b22', c2: '#2a0d00', fadeIn: 0, fadeOut: 0.6 }],
+    ['🔮 Magic', { count: 70, duration: 1.6, shape: 'ring', er: 60, angle: -90, spread: 360, speedMin: 4,
+      speedMax: 26, gravity: -10, drag: 0.2, lifeMin: 0.8, lifeMax: 1.6, sprite: 'star', sizeStart: 18,
+      sizeEnd: 2, sizeVar: 0.5, rotVar: 180, spin: 140, swirl: 70, c0: '#ffffff', c1: '#9fd4ff', c2: '#7d4dff',
+      fadeIn: 0.2, fadeOut: 0.5 }],
+    ['🌧 Rain', { count: 130, duration: 1, oy: 0.06, shape: 'line', er: 130, angle: 100, spread: 2,
+      speedMin: 420, speedMax: 560, lifeMin: 0.5, lifeMax: 0.62, sprite: 'circle', sizeStart: 3, sizeEnd: 3,
+      sizeVar: 0.3, stretch: 2.4, c0: '#cfe6ff', c1: '#9cc4ff', c2: '#7aa8ff', fadeIn: 0, fadeOut: 0.15,
+      opacity: 0.8, blend: 'source-over' }],
+    ['❄ Snow', { count: 90, duration: 5, oy: 0.04, shape: 'line', er: 135, angle: 90, spread: 24,
+      speedMin: 22, speedMax: 50, lifeMin: 3.5, lifeMax: 5, sprite: 'soft', sizeStart: 8, sizeEnd: 7,
+      sizeVar: 0.6, wob: 16, wobFreq: 0.5, c0: '#ffffff', c1: '#f0f6ff', c2: '#dce8ff', fadeIn: 0.08,
+      fadeOut: 0.12, opacity: 0.95, blend: 'source-over' }],
+    ['💚 Heal', { count: 26, duration: 1.8, oy: 0.78, shape: 'circle', er: 42, angle: -90, spread: 10,
+      speedMin: 24, speedMax: 50, lifeMin: 1, lifeMax: 1.7, sprite: 'plus', sizeStart: 20, sizeEnd: 10,
+      sizeVar: 0.4, wob: 4, wobFreq: 1, c0: '#d4ffc8', c1: '#47e070', c2: '#0b9a3c', fadeIn: 0.2, fadeOut: 0.5 }],
+    ['⚡ Hit impact', { mode: 'burst', count: 26, duration: 0.5, burstSpread: 0.01, radial: true,
+      speedMin: 160, speedMax: 340, drag: 5.5, lifeMin: 0.15, lifeMax: 0.38, sprite: 'spark', sizeStart: 22,
+      sizeEnd: 3, sizeVar: 0.4, stretch: 1, c0: '#ffffff', c1: '#ffd45e', c2: '#ff5a00', fadeIn: 0, fadeOut: 0.4 }],
+    ['🟤 Dust', { count: 34, duration: 1.5, oy: 0.85, shape: 'line', er: 40, angle: -90, spread: 160,
+      speedMin: 14, speedMax: 50, gravity: -6, drag: 2, lifeMin: 0.8, lifeMax: 1.4, sprite: 'smoke',
+      sizeStart: 12, sizeEnd: 38, rotVar: 180, spin: 30, c0: '#d7c6a6', c1: '#b39e7c', c2: '#7d6c52',
+      fadeIn: 0.15, fadeOut: 0.6, opacity: 0.55, blend: 'source-over' }],
+    ['🌀 Portal', { count: 90, duration: 1.5, shape: 'ring', er: 75, radial: true, angle: 0, spread: 0,
+      speedMin: -85, speedMax: -55, lifeMin: 0.9, lifeMax: 1.3, sprite: 'soft', sizeStart: 14, sizeEnd: 3,
+      sizeVar: 0.4, swirl: 150, c0: '#d6f1ff', c1: '#45a8ff', c2: '#6a2dff', fadeIn: 0.2, fadeOut: 0.6 }]
+  ];
+
+  var UI = [
+    ['Effect'],
+    ['mode', 'Mode', 'sel', [['loop', 'Loop (seamless)'], ['burst', 'Burst (one shot)']]],
+    ['count', 'Particles', 'num', 1, 600, 1],
+    ['duration', 'Duration (s)', 'num', 0.2, 10, 0.1],
+    ['fps', 'FPS', 'num', 1, 60, 1],
+    ['seed', 'Random seed', 'num', 1, 9999, 1],
+    ['burstSpread', 'Burst spread (s)', 'num', 0, 1, 0.01],
+    ['Emitter'],
+    ['shape', 'Emitter shape', 'sel', [['point', 'Point'], ['circle', 'Disc'], ['ring', 'Ring'], ['line', 'Line'], ['rect', 'Square']]],
+    ['er', 'Emitter size', 'num', 0, 200, 1],
+    ['radial', 'Emit outward', 'chk'],
+    ['angle', 'Direction °', 'num', -360, 360, 1],
+    ['spread', 'Spread °', 'num', 0, 360, 1],
+    ['Motion'],
+    ['speedMin', 'Speed min', 'num', -500, 800, 1],
+    ['speedMax', 'Speed max', 'num', -500, 800, 1],
+    ['gravity', 'Gravity (+ down)', 'num', -800, 800, 1],
+    ['drag', 'Drag', 'num', 0, 10, 0.1],
+    ['lifeMin', 'Life min (s)', 'num', 0.05, 8, 0.05],
+    ['lifeMax', 'Life max (s)', 'num', 0.05, 8, 0.05],
+    ['swirl', 'Swirl °/s', 'num', -720, 720, 1],
+    ['wob', 'Wobble px', 'num', 0, 60, 1],
+    ['wobFreq', 'Wobble speed', 'num', 0, 10, 0.1],
+    ['Look'],
+    ['sprite', 'Sprite', 'sel', [['soft', 'Soft glow'], ['circle', 'Circle'], ['ring', 'Ring'], ['spark', 'Glint'],
+      ['star', 'Star'], ['smoke', 'Smoke puff'], ['square', 'Square'], ['flame', 'Flame'], ['plus', 'Plus'], ['custom', 'My sprite']]],
+    ['sizeStart', 'Size start', 'num', 1, 300, 1],
+    ['sizeEnd', 'Size end', 'num', 0, 300, 1],
+    ['sizeVar', 'Size random', 'num', 0, 1, 0.05],
+    ['rotVar', 'Start rotation ±°', 'num', 0, 180, 1],
+    ['spin', 'Spin °/s', 'num', 0, 720, 1],
+    ['stretch', 'Stretch to speed', 'num', 0, 10, 0.1],
+    ['c0', 'Color start', 'col'],
+    ['c1', 'Color middle', 'col'],
+    ['c2', 'Color end', 'col'],
+    ['fadeIn', 'Fade in', 'num', 0, 0.9, 0.05],
+    ['fadeOut', 'Fade out', 'num', 0, 1, 0.05],
+    ['opacity', 'Opacity', 'num', 0, 1, 0.05],
+    ['blend', 'Blend', 'sel', [['source-over', 'Normal'], ['lighter', 'Additive (glow)'], ['screen', 'Screen']]],
+    ['tint', 'Tint my sprite', 'chk']
+  ];
+
+  var fx = Object.assign({}, DEF);
+  var parts = [], ramp = [], customBase = null, baseCache = {};
+  var isOpen = false, playing = true, time = 0, lastTs = 0, previewBg = 'checker';
+
+  // ---------- styles + screen ----------
+  var css = document.createElement('style');
+  css.textContent =
+    '#vfx{position:fixed;inset:0;z-index:90000;display:none;flex-direction:column;background:#1b1b1b;color:#ddd;font:13px system-ui,sans-serif}' +
+    '#vfx *{box-sizing:border-box}' +
+    '#vfx-top{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#2a2a2a;border-bottom:1px solid #111;flex-shrink:0}' +
+    '#vfx-top b{font-size:15px}#vfx-top .sp{flex:1}' +
+    '#vfx button{background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:6px;padding:7px 10px;cursor:pointer;font-size:12px}' +
+    '#vfx button:hover{background:#4a4a4a}#vfx button:active{filter:brightness(1.6)}' +
+    '#vfx button.on{background:#2f6fed;border-color:#2f6fed;color:#fff}' +
+    '#vfx-main{flex:1;min-height:0;display:flex}' +
+    '#vfx-left{width:150px;overflow-y:auto;padding:8px;background:#242424;border-right:1px solid #111;display:flex;flex-direction:column;gap:6px;flex-shrink:0}' +
+    '#vfx-center{flex:1;min-width:0;display:flex;flex-direction:column}' +
+    '#vfx-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#151515;overflow:hidden}' +
+    '#vfx-cv{display:block;touch-action:none;cursor:crosshair;background-color:#fff;' +
+    'background-image:linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%),linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%);' +
+    'background-size:20px 20px;background-position:0 0,10px 10px}' +
+    '#vfx-bar{display:flex;align-items:center;gap:8px;padding:8px;background:#242424;border-top:1px solid #111;flex-wrap:wrap}' +
+    '#vfx-bar input[type=range]{flex:1;min-width:100px}' +
+    '#vfx-right{width:310px;overflow-y:auto;padding:8px 10px 30px;background:#242424;border-left:1px solid #111;flex-shrink:0}' +
+    '.vsec{margin:14px 0 6px;color:#9ab;font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:1px}' +
+    '.vr{display:flex;align-items:center;gap:6px;margin-bottom:7px}' +
+    '.vr label{width:108px;flex-shrink:0;color:#bbb;font-size:12px}' +
+    '.vr input[type=range]{flex:1;min-width:0}' +
+    '.vr input[type=number],.vr input[type=text],.vr select{padding:4px;background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:4px}' +
+    '.vr input[type=number]{width:62px}.vr select{flex:1;min-width:0}.vr input[type=text]{flex:1;min-width:0}' +
+    '.vr input[type=color]{width:60px;height:28px;border:1px solid #555;background:none;cursor:pointer}' +
+    '.vbtns{display:flex;flex-direction:column;gap:6px;margin-top:8px}' +
+    '.vhint{color:#777;font-size:11px;margin-top:6px;line-height:1.4}' +
+    '@media (max-width:900px){#vfx-main{flex-direction:column}' +
+    '#vfx-left{width:auto;flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid #111}' +
+    '#vfx-left button{white-space:nowrap;flex-shrink:0}#vfx-center{flex:0 0 42%}' +
+    '#vfx-right{width:auto;flex:1;border-left:0;border-top:1px solid #111}}' +
+    '@media (pointer:coarse){#vfx button{padding:11px 14px;font-size:14px}.vr label{font-size:13px}.vr input[type=number]{height:36px}.vr select{height:36px}}';
+  document.head.appendChild(css);
+
+  var root = document.createElement('div');
+  root.id = 'vfx';
+  root.innerHTML =
+    '<div id="vfx-top"><b>✨ VFX Studio</b><span id="vfx-info" style="color:#888"></span><span class="sp"></span>' +
+    '<button id="vfx-close">✕ Close</button></div>' +
+    '<div id="vfx-main"><div id="vfx-left"></div>' +
+    '<div id="vfx-center"><div id="vfx-stage"><canvas id="vfx-cv"></canvas></div>' +
+    '<div id="vfx-bar"><button id="vp-first">⏮</button><button id="vp-play" class="on">⏸ Pause</button>' +
+    '<input type="range" id="vp-scrub" min="0" max="23" value="0"><span id="vp-flabel" style="min-width:76px"></span>' +
+    '<select id="vp-bg"><option value="checker">Checker</option><option value="#000000">Black</option>' +
+    '<option value="#444444">Gray</option><option value="#ffffff">White</option><option value="#12301f">Green</option></select>' +
+    '<label><input type="checkbox" id="vp-guide" checked> Guides</label><button id="vp-seed">🎲 Reseed</button></div></div>' +
+    '<div id="vfx-right"></div></div>';
+  document.body.appendChild(root);
+
+  var $ = function (id) { return document.getElementById(id); };
+  var left = $('vfx-left'), right = $('vfx-right'), cv = $('vfx-cv'), stage = $('vfx-stage');
+  var ctx = cv.getContext('2d');
+
+  var tb = document.createElement('div');
+  tb.className = 'tb-group';
+  tb.innerHTML = '<button id="btn-vfx" title="VFX Studio: particle effects for game assets">✨ VFX</button>';
+  $('topbar').insertBefore(tb, $('topbar').firstChild);
+
+  // ---------- sprites ----------
+  var SPR = {
+    soft: function (c) {
+      var g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+      g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.35, 'rgba(255,255,255,0.6)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+      c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+    },
+    circle: function (c) {
+      var g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+      g.addColorStop(0, '#fff'); g.addColorStop(0.85, '#fff'); g.addColorStop(1, 'rgba(255,255,255,0)');
+      c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+    },
+    ring: function (c) { c.strokeStyle = '#fff'; c.lineWidth = 5; c.beginPath(); c.arc(32, 32, 26, 0, TAU); c.stroke(); },
+    spark: function (c) {
+      c.fillStyle = '#fff'; c.beginPath(); c.moveTo(32, 2);
+      c.quadraticCurveTo(34, 30, 62, 32); c.quadraticCurveTo(34, 34, 32, 62);
+      c.quadraticCurveTo(30, 34, 2, 32); c.quadraticCurveTo(30, 30, 32, 2); c.fill();
+    },
+    star: function (c) {
+      c.fillStyle = '#fff'; c.shadowColor = '#fff'; c.shadowBlur = 6; c.beginPath();
+      for (var i = 0; i < 10; i++) {
+        var a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 13 : 28;
+        c.lineTo(32 + Math.cos(a) * r, 32 + Math.sin(a) * r);
+      }
+      c.closePath(); c.fill();
+    },
+    smoke: function (c) {
+      [[0, 0, 26], [-12, 6, 20], [12, 4, 20], [-6, -12, 18], [8, -10, 18], [0, 14, 18], [-16, -4, 14]].forEach(function (p) {
+        var g = c.createRadialGradient(32 + p[0], 32 + p[1], 0, 32 + p[0], 32 + p[1], p[2]);
+        g.addColorStop(0, 'rgba(255,255,255,0.5)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+        c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+      });
+    },
+    square: function (c) { c.fillStyle = '#fff'; c.fillRect(8, 8, 48, 48); },
+    flame: function (c) {
+      var g = c.createLinearGradient(0, 0, 0, 64);
+      g.addColorStop(0, 'rgba(255,255,255,0.15)'); g.addColorStop(0.5, 'rgba(255,255,255,1)'); g.addColorStop(1, 'rgba(255,255,255,0.9)');
+      c.fillStyle = g; c.shadowColor = '#fff'; c.shadowBlur = 8; c.beginPath(); c.moveTo(32, 4);
+      c.bezierCurveTo(52, 24, 54, 46, 32, 60); c.bezierCurveTo(10, 46, 12, 24, 32, 4); c.closePath(); c.fill();
+    },
+    plus: function (c) { c.fillStyle = '#fff'; c.fillRect(24, 6, 16, 52); c.fillRect(6, 24, 52, 16); }
+  };
+  function spriteBase() {
+    if (fx.sprite === 'custom' && customBase) return customBase;
+    var n = (fx.sprite === 'custom' || !SPR[fx.sprite]) ? 'soft' : fx.sprite;
+    if (!baseCache[n]) {
+      var c = document.createElement('canvas');
+      c.width = c.height = SP;
+      var x = c.getContext('2d');
+      x.scale(SP / 64, SP / 64);
+      SPR[n](x);
+      baseCache[n] = c;
+    }
+    return baseCache[n];
+  }
+  function hexRgb(h) { var n = parseInt(String(h).slice(1), 16) || 0; return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function colAt(u) {
+    var a = hexRgb(fx.c0), b = hexRgb(fx.c1), c = hexRgb(fx.c2);
+    var f = u < 0.5 ? [a, b, u * 2] : [b, c, (u - 0.5) * 2];
+    return 'rgb(' + [0, 1, 2].map(function (i) { return Math.round(lerp(f[0][i], f[1][i], f[2])); }).join(',') + ')';
+  }
+  function buildRamp() {
+    var base = spriteBase();
+    ramp = [];
+    if (fx.sprite === 'custom' && customBase && !fx.tint) { ramp.push(base); return; }
+    for (var i = 0; i < KR; i++) {
+      var c = document.createElement('canvas');
+      c.width = c.height = SP;
+      var x = c.getContext('2d');
+      x.drawImage(base, 0, 0);
+      x.globalCompositeOperation = 'source-in';
+      x.fillStyle = colAt(i / (KR - 1));
+      x.fillRect(0, 0, SP, SP);
+      ramp.push(c);
+    }
+  }
+
+  // ---------- particles (everything is a pure function of time) ----------
+  function rng(seed) {
+    var a = (seed >>> 0) || 1;
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function build() {
+    var r = rng(fx.seed), P = [], D = fx.duration, loop = fx.mode === 'loop';
+    for (var i = 0; i < fx.count; i++) {
+      var life = lerp(fx.lifeMin, Math.max(fx.lifeMin, fx.lifeMax), r());
+      if (loop) life = Math.min(life, D);
+      var tb0 = loop ? (i + r()) / fx.count * D : r() * fx.burstSpread;
+      var px = 0, py = 0, a, d;
+      if (fx.shape === 'circle') { a = r() * TAU; d = fx.er * Math.sqrt(r()); px = Math.cos(a) * d; py = Math.sin(a) * d; }
+      else if (fx.shape === 'ring') { a = r() * TAU; px = Math.cos(a) * fx.er; py = Math.sin(a) * fx.er; }
+      else if (fx.shape === 'line') { px = (r() * 2 - 1) * fx.er; }
+      else if (fx.shape === 'rect') { px = (r() * 2 - 1) * fx.er; py = (r() * 2 - 1) * fx.er; }
+      var dir = (fx.angle + (r() - 0.5) * fx.spread) * Math.PI / 180;
+      if (fx.radial) dir = (px || py) ? Math.atan2(py, px) + (r() - 0.5) * fx.spread * Math.PI / 180 : r() * TAU;
+      var sp = lerp(fx.speedMin, fx.speedMax, r());
+      P.push({
+        tb: tb0, life: Math.max(0.01, life), px: px, py: py,
+        vx: Math.cos(dir) * sp, vy: Math.sin(dir) * sp,
+        sz: 1 + (r() * 2 - 1) * fx.sizeVar,
+        rot: (r() * 2 - 1) * fx.rotVar * Math.PI / 180,
+        spin: (r() * 2 - 1) * fx.spin * Math.PI / 180, ph: r()
+      });
+    }
+    return P;
+  }
+  function stateAt(p, age) {
+    var k = fx.drag, g = fx.gravity, x, y, vx, vy;
+    if (k < 1e-4) {
+      x = p.px + p.vx * age; y = p.py + p.vy * age + 0.5 * g * age * age;
+      vx = p.vx; vy = p.vy + g * age;
+    } else {
+      var e = Math.exp(-k * age), gk = g / k;
+      x = p.px + p.vx * (1 - e) / k;
+      y = p.py + gk * age + (p.vy - gk) * (1 - e) / k;
+      vx = p.vx * e; vy = gk + (p.vy - gk) * e;
+    }
+    if (fx.wob) {
+      var w = TAU * (fx.wobFreq * age + p.ph);
+      x += fx.wob * Math.sin(w); y += fx.wob * 0.5 * Math.cos(w * 0.8);
+    }
+    if (fx.swirl) {
+      var sa = fx.swirl * age * Math.PI / 180, c = Math.cos(sa), s = Math.sin(sa);
+      var nx = x * c - y * s; y = x * s + y * c; x = nx;
+    }
+    return { x: x, y: y, vx: vx, vy: vy };
+  }
+
+  function draw(c, t, w, h, o) {
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+    c.clearRect(0, 0, w, h);
+    if (o.bg) { c.fillStyle = o.bg; c.fillRect(0, 0, w, h); }
+    var ox = fx.ox * w, oy = fx.oy * h, D = fx.duration, loop = fx.mode === 'loop';
+    c.globalCompositeOperation = fx.blend;
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      var age = loop ? (((t - p.tb) % D) + D) % D : t - p.tb;
+      if (age < 0 || age > p.life) continue;
+      var u = age / p.life, st = stateAt(p, age);
+      var a = fx.opacity;
+      if (fx.fadeIn > 0) a *= Math.min(1, u / fx.fadeIn);
+      if (fx.fadeOut > 0) a *= Math.min(1, (1 - u) / fx.fadeOut);
+      if (a <= 0.003) continue;
+      var size = lerp(fx.sizeStart, fx.sizeEnd, u) * p.sz;
+      if (size < 0.2) continue;
+      var spr = ramp[Math.min(ramp.length - 1, Math.floor(u * ramp.length))];
+      var rot, sx = size, sy = size;
+      if (fx.stretch > 0) {
+        rot = Math.atan2(st.vy, st.vx);
+        sx = size * (1 + fx.stretch * Math.hypot(st.vx, st.vy) / 200);
+      } else rot = p.rot + p.spin * age;
+      var cs = Math.cos(rot), sn = Math.sin(rot);
+      c.globalAlpha = Math.min(1, a);
+      c.setTransform(cs * sx / SP, sn * sx / SP, -sn * sy / SP, cs * sy / SP, ox + st.x, oy + st.y);
+      c.drawImage(spr, -SP / 2, -SP / 2);
+    }
+    c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+    if (o.guide) {
+      c.strokeStyle = 'rgba(0,200,255,0.9)'; c.lineWidth = 1; c.setLineDash([4, 3]);
+      c.beginPath(); c.moveTo(ox - 8, oy); c.lineTo(ox + 8, oy); c.moveTo(ox, oy - 8); c.lineTo(ox, oy + 8); c.stroke();
+      if (fx.shape === 'circle' || fx.shape === 'ring') { c.beginPath(); c.arc(ox, oy, fx.er, 0, TAU); c.stroke(); }
+      else if (fx.shape === 'line') { c.beginPath(); c.moveTo(ox - fx.er, oy); c.lineTo(ox + fx.er, oy); c.stroke(); }
+      else if (fx.shape === 'rect') c.strokeRect(ox - fx.er, oy - fx.er, fx.er * 2, fx.er * 2);
+      c.setLineDash([]);
+    }
+  }
+
+  // ---------- time + preview ----------
+  function nFrames() { return Math.max(1, Math.round(fx.duration * fx.fps)); }
+  function curT() { var D = fx.duration; return time % (fx.mode === 'loop' ? D : D + 0.5); }
+  function curFrameIdx() { return clamp(Math.floor(curT() / fx.duration * nFrames()), 0, nFrames() - 1); }
+  function paintNow() {
+    draw(ctx, curT(), fx.w, fx.h, { bg: previewBg === 'checker' ? null : previewBg, guide: $('vp-guide').checked });
+    var f = curFrameIdx();
+    $('vp-scrub').value = f;
+    $('vp-flabel').textContent = 'Frame ' + f + ' / ' + (nFrames() - 1);
+  }
+  function updateInfo() {
+    $('vp-scrub').max = nFrames() - 1;
+    $('vfx-info').textContent = nFrames() + ' frames · ' + fx.duration + 's · ' + fx.fps + ' fps · ' + fx.w + '×' + fx.h +
+      (fx.mode === 'loop' ? ' · loops (life capped at duration)' : ' · one shot');
+  }
+  function fit() {
+    var r = stage.getBoundingClientRect();
+    var s = Math.max(0.25, Math.min((r.width - 16) / fx.w, (r.height - 16) / fx.h));
+    cv.style.width = Math.round(fx.w * s) + 'px';
+    cv.style.height = Math.round(fx.h * s) + 'px';
+  }
+  function refresh(k) {
+    parts = build();
+    if (!k || { c0: 1, c1: 1, c2: 1, sprite: 1, tint: 1 }[k]) buildRamp();
+    updateInfo();
+    paintNow();
+  }
+  function tick(ts) {
+    if (!isOpen) return;
+    requestAnimationFrame(tick);
+    var dt = lastTs ? Math.min(0.1, (ts - lastTs) / 1000) : 0;
+    lastTs = ts;
+    if (playing) { time += dt; paintNow(); }
+  }
+
+  // ---------- controls ----------
+  var ctrls = {};
+  function addRow(d) {
+    if (d.length === 1) {
+      var h = document.createElement('div'); h.className = 'vsec'; h.textContent = d[0]; right.appendChild(h); return;
+    }
+    var k = d[0], type = d[2];
+    var row = document.createElement('div'); row.className = 'vr';
+    var lab = document.createElement('label'); lab.textContent = d[1]; row.appendChild(lab);
+    if (type === 'num') {
+      var rg = document.createElement('input'), nm = document.createElement('input');
+      rg.type = 'range'; nm.type = 'number';
+      [rg, nm].forEach(function (e) { e.min = d[3]; e.max = d[4]; e.step = d[5]; });
+      var on = function (src) {
+        var v = Number(src.value);
+        if (isNaN(v)) return;
+        v = clamp(v, d[3], d[4]);
+        fx[k] = v;
+        if (src !== rg) rg.value = v;
+        if (src !== nm) nm.value = v;
+        refresh(k);
+      };
+      rg.addEventListener('input', function () { on(rg); });
+      nm.addEventListener('input', function () { on(nm); });
+      row.appendChild(rg); row.appendChild(nm);
+      ctrls[k] = function () { rg.value = fx[k]; nm.value = fx[k]; };
+    } else if (type === 'sel') {
+      var s = document.createElement('select');
+      d[3].forEach(function (o) { var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; s.appendChild(op); });
+      s.addEventListener('change', function () { fx[k] = s.value; refresh(k); });
+      row.appendChild(s);
+      ctrls[k] = function () { s.value = fx[k]; };
+    } else if (type === 'chk') {
+      var ch = document.createElement('input'); ch.type = 'checkbox';
+      ch.addEventListener('change', function () { fx[k] = ch.checked; refresh(k); });
+      row.appendChild(ch);
+      ctrls[k] = function () { ch.checked = !!fx[k]; };
+    } else if (type === 'col') {
+      var co = document.createElement('input'); co.type = 'color';
+      co.addEventListener('click', function (e) {
+        e.preventDefault();
+        ColorPicker.open(co, co.value, 100, function (hex) { co.value = hex; fx[k] = hex; refresh(k); }, { alpha: false });
+      });
+      row.appendChild(co);
+      ctrls[k] = function () { co.value = fx[k]; };
+    }
+    right.appendChild(row);
+  }
+  UI.forEach(addRow);
+
+  right.insertAdjacentHTML('beforeend',
+    '<div class="vsec">Export (game assets)</div>' +
+    '<div class="vr"><label>Frame size</label><select id="vx-size">' +
+    '<option value="64,64">64 × 64</option><option value="128,128">128 × 128</option><option value="192,192">192 × 192</option>' +
+    '<option value="256,256">256 × 256</option><option value="384,384">384 × 384</option><option value="512,512">512 × 512</option>' +
+    '<option value="256,128">256 × 128</option><option value="512,256">512 × 256</option></select></div>' +
+    '<div class="vr"><label>Columns</label><input type="number" id="vx-cols" value="8" min="1" max="64"></div>' +
+    '<div class="vr"><label>Padding px</label><input type="number" id="vx-pad" value="0" min="0" max="32"></div>' +
+    '<div class="vr"><label>Background</label><select id="vx-bg"><option value="none">Transparent</option>' +
+    '<option value="#000000">Black (for additive)</option></select></div>' +
+    '<div class="vr"><label>File name</label><input type="text" id="vx-name" value="vfx"></div>' +
+    '<div class="vbtns"><button id="vx-sheet">⬇ Sprite sheet + JSON</button><button id="vx-png">⬇ This frame PNG</button>' +
+    '<button id="vx-send">→ Send this frame to canvas</button>' +
+    '<button id="vx-save">💾 Save effect (.json)</button><button id="vx-open">📂 Open effect</button></div>' +
+    '<input type="file" id="vx-openfile" accept=".json,application/json" hidden>' +
+    '<p class="vhint">Tap or drag on the preview to move the emitter. Use a Black background for additive (glow) effects if your game does not use additive blending.</p>');
+
+  // presets + custom sprite buttons (left column)
+  var presetBtns = [];
+  PRE.forEach(function (p) {
+    var b = document.createElement('button');
+    b.textContent = p[0];
+    b.addEventListener('click', function () {
+      fx = Object.assign({}, DEF, p[1], { w: fx.w, h: fx.h });
+      presetBtns.forEach(function (x) { x.classList.toggle('on', x === b); });
+      time = 0; syncAll();
+    });
+    left.appendChild(b); presetBtns.push(b);
+  });
+  var cap = document.createElement('div'); cap.className = 'vsec'; cap.textContent = 'My sprite'; left.appendChild(cap);
+  function leftBtn(id, text, title) {
+    var b = document.createElement('button'); b.id = id; b.textContent = text; b.title = title; left.appendChild(b);
+  }
+  leftBtn('vs-sel', 'From selection', 'Use the shape you had selected on the canvas as the particle');
+  leftBtn('vs-img', 'Import image', 'Use a PNG/JPG as the particle');
+  left.insertAdjacentHTML('beforeend', '<input type="file" id="vs-file" accept="image/*" hidden>');
+
+  function syncAll() {
+    Object.keys(ctrls).forEach(function (k) { ctrls[k](); });
+    $('vx-size').value = fx.w + ',' + fx.h;
+    cv.width = fx.w; cv.height = fx.h;
+    parts = build(); buildRamp(); updateInfo(); fit(); paintNow();
+  }
+
+  function setCustom(src, w, h) {
+    var c = document.createElement('canvas');
+    c.width = c.height = SP;
+    var s = Math.min(SP / w, SP / h), dw = w * s, dh = h * s;
+    c.getContext('2d').drawImage(src, (SP - dw) / 2, (SP - dh) / 2, dw, dh);
+    customBase = c; fx.sprite = 'custom';
+    ctrls.sprite(); buildRamp(); paintNow();
+    say('Custom sprite set');
+  }
+  $('vs-sel').addEventListener('click', function () {
+    if (!selection.length) { say('Close VFX, select a shape on the canvas, then open VFX again'); return; }
+    var b = selectionStrokeBounds();
+    var w = Math.max(8, Math.min(256, Math.round(b.width)));
+    var h = Math.max(8, Math.round(w * b.height / b.width));
+    var c = renderArea(b, w, h, true, null);
+    setCustom(c, c.width, c.height);
+  });
+  $('vs-img').addEventListener('click', function () { $('vs-file').click(); });
+  $('vs-file').addEventListener('change', function () {
+    var f = this.files[0]; this.value = '';
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      var im = new Image();
+      im.onload = function () { setCustom(im, im.width, im.height); };
+      im.src = rd.result;
+    };
+    rd.readAsDataURL(f);
+  });
+
+  $('vx-size').addEventListener('change', function () {
+    var v = this.value.split(',');
+    fx.w = Number(v[0]); fx.h = Number(v[1]);
+    cv.width = fx.w; cv.height = fx.h;
+    updateInfo(); fit(); paintNow();
+  });
+
+  // ---------- preview bar ----------
+  function setPlay(on) { playing = on; $('vp-play').textContent = on ? '⏸ Pause' : '▶ Play'; $('vp-play').classList.toggle('on', on); }
+  $('vp-play').addEventListener('click', function () { setPlay(!playing); });
+  $('vp-first').addEventListener('click', function () { time = 0; paintNow(); });
+  $('vp-scrub').addEventListener('input', function () {
+    setPlay(false);
+    time = Number(this.value) * fx.duration / nFrames();
+    paintNow();
+  });
+  $('vp-bg').addEventListener('change', function () { previewBg = this.value; paintNow(); });
+  $('vp-guide').addEventListener('change', paintNow);
+  $('vp-seed').addEventListener('click', function () {
+    fx.seed = 1 + Math.floor(Math.random() * 9999);
+    ctrls.seed(); refresh('seed');
+  });
+
+  var dragging = false;
+  function setOrigin(e) {
+    var r = cv.getBoundingClientRect();
+    fx.ox = clamp((e.clientX - r.left) / r.width, 0, 1);
+    fx.oy = clamp((e.clientY - r.top) / r.height, 0, 1);
+    paintNow();
+  }
+  cv.addEventListener('pointerdown', function (e) { cv.setPointerCapture(e.pointerId); dragging = true; setOrigin(e); });
+  cv.addEventListener('pointermove', function (e) { if (dragging) setOrigin(e); });
+  cv.addEventListener('pointerup', function () { dragging = false; });
+  cv.addEventListener('pointercancel', function () { dragging = false; });
+
+  // ---------- export ----------
+  function frameCanvas(i, bg) {
+    var c = document.createElement('canvas');
+    c.width = fx.w; c.height = fx.h;
+    draw(c.getContext('2d'), i * fx.duration / nFrames(), fx.w, fx.h, { bg: bg, guide: false });
+    return c;
+  }
+  function exportBg() { var v = $('vx-bg').value; return v === 'none' ? null : v; }
+  function fname() { return ($('vx-name').value || 'vfx').replace(/[^\w\-]+/g, '_'); }
+
+  $('vx-sheet').addEventListener('click', function () {
+    var n = nFrames(), w = fx.w, h = fx.h;
+    var cols = Math.min(n, clamp(Math.round(Number($('vx-cols').value) || 1), 1, 64));
+    var pad = clamp(Math.round(Number($('vx-pad').value) || 0), 0, 32);
+    var rows = Math.ceil(n / cols), W = cols * w + (cols + 1) * pad, H = rows * h + (rows + 1) * pad;
+    if (W > 8192 || H > 8192 || W * H > 16000000) {
+      alert('The sheet would be ' + W + ' x ' + H + ' px. Too big. Use a smaller frame size, fewer frames or more columns.');
+      return;
+    }
+    var sheet = document.createElement('canvas');
+    sheet.width = W; sheet.height = H;
+    var sx = sheet.getContext('2d'), bg = exportBg(), meta = [];
+    if (bg) { sx.fillStyle = bg; sx.fillRect(0, 0, W, H); }
+    for (var i = 0; i < n; i++) {
+      var x = pad + (i % cols) * (w + pad), y = pad + Math.floor(i / cols) * (h + pad);
+      sx.drawImage(frameCanvas(i, bg), x, y);
+      meta.push({ index: i, x: x, y: y, w: w, h: h });
+    }
+    var name = fname();
+    var json = { image: name + '.png', frameWidth: w, frameHeight: h, columns: cols, rows: rows,
+                 fps: fx.fps, frameCount: n, durationSeconds: fx.duration, loop: fx.mode === 'loop', frames: meta };
+    sheet.toBlob(function (blob) {
+      if (!blob) { alert('Export failed. Try a smaller size.'); return; }
+      downloadBlob(blob, name + '.png');
+      setTimeout(function () {
+        downloadBlob(new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' }), name + '.json');
+      }, 500);
+    }, 'image/png');
+  });
+  $('vx-png').addEventListener('click', function () {
+    frameCanvas(curFrameIdx(), exportBg()).toBlob(function (blob) {
+      if (blob) downloadBlob(blob, fname() + '-frame' + curFrameIdx() + '.png');
+    }, 'image/png');
+  });
+  $('vx-send').addEventListener('click', function () {
+    var f = curFrameIdx(), c = frameCanvas(f, exportBg());
+    closeVfx();
+    var r = new paper.Raster(c);
+    r.position = paper.view.center;
+    registerItem(r, 'VFX frame', '✨');
+    setSelection([r]);
+    saveState();
+    renderLayers();
+    say('VFX frame ' + f + ' added to the canvas');
+  });
+  $('vx-save').addEventListener('click', function () {
+    downloadBlob(new Blob([JSON.stringify(fx, null, 2)], { type: 'application/json' }), fname() + '-effect.json');
+  });
+  $('vx-open').addEventListener('click', function () { $('vx-openfile').click(); });
+  $('vx-openfile').addEventListener('change', function () {
+    var f = this.files[0]; this.value = '';
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      try {
+        var d = JSON.parse(rd.result);
+        fx = Object.assign({}, DEF, d);
+        if (fx.sprite === 'custom' && !customBase) fx.sprite = 'soft';
+        time = 0; syncAll();
+      } catch (err) { alert('This is not a VFX effect file.'); }
+    };
+    rd.readAsText(f);
+  });
+
+  // ---------- open / close ----------
+  function openVfx() {
+    if (isOpen) return;
+    isOpen = true;
+    root.style.display = 'flex';
+    lastTs = 0;
+    syncAll();
+    requestAnimationFrame(tick);
+  }
+  function closeVfx() {
+    isOpen = false;
+    root.style.display = 'none';
+    ColorPicker.close();
+  }
+  $('btn-vfx').addEventListener('click', openVfx);
+  $('vfx-close').addEventListener('click', closeVfx);
+  window.addEventListener('resize', function () { if (isOpen) fit(); });
+
+  // while VFX is open, the drawing app must not react to key presses
+  window.addEventListener('keydown', function (e) {
+    if (!isOpen) return;
+    e.stopImmediatePropagation();
+    if (e.key === 'Escape') closeVfx();
+    else if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT') {
+      e.preventDefault(); setPlay(!playing);
+    }
+  }, true);
+  window.addEventListener('keyup', function (e) { if (isOpen) e.stopImmediatePropagation(); }, true);
+
+  ctrls.sprite = ctrls.sprite || function () {};
+  presetBtns[0].classList.add('on');
+  fx = Object.assign({}, DEF, PRE[0][1]);
+})();
