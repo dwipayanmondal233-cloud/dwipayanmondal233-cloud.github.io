@@ -76,7 +76,7 @@ function syncPanelFromItem(item) {
   } else if (item.className !== 'Group') {
     fillTypeSel.value = 'none';
   }
-  if (item.strokeColor) strokeInput.value = item.strokeColor.toCSS(true);
+  if (item.strokeColor && item.strokeColor.type !== 'gradient') strokeInput.value = item.strokeColor.toCSS(true);
   widthInput.value = item.strokeWidth;
   fillOpInput.value = Math.round(alphaOf(item.fillColor) * 100);
   fillOpLabel.textContent = fillOpInput.value + '%';
@@ -4062,7 +4062,21 @@ document.addEventListener('keydown', function (e) {
   canvasArea.appendChild(onionCv);
 
    // ---------- maths ----------
+  function bezEase(t, kind) {
+    var q = kind.slice(4).split(',').map(Number);
+    var x1 = q[0], y1 = q[1], x2 = q[2], y2 = q[3];
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    var lo = 0, hi = 1, s = t, x;
+    for (var i = 0; i < 24; i++) {
+      s = (lo + hi) / 2;
+      x = 3 * (1 - s) * (1 - s) * s * x1 + 3 * (1 - s) * s * s * x2 + s * s * s;
+      if (x < t) lo = s; else hi = s;
+    }
+    return 3 * (1 - s) * (1 - s) * s * y1 + 3 * (1 - s) * s * s * y2 + s * s * s;
+  }
   function easeT(t, kind) {
+    if (typeof kind === 'string' && kind.indexOf('bez:') === 0) return bezEase(t, kind);
     switch (kind) {
       case 'linear': return t;
       case 'step': return 0;
@@ -4872,6 +4886,15 @@ document.addEventListener('keydown', function (e) {
     });
   });
 
+  window.animApi = {
+    anim: anim,
+    frame: function () { return curFrame; },
+    applyFrame: applyFrame,
+    stop: function () { setPlaying(false); },
+    refresh: function () { applyFrame(curFrame); tlDirty = true; renderOnion(); },
+    commit: commit
+  };
+
   syncInputs();
   setFrame(0, true);
 })();
@@ -5141,6 +5164,7 @@ document.addEventListener('keydown', function (e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key.toLowerCase() === 'o') setTool('ellipse');
   });
+  window.ellApi = { ellOf: ellOf, rebuild: rebuildEllipse, sync: syncEllipsePanel };
 })();
 
 // ======================================================
@@ -5290,6 +5314,131 @@ document.addEventListener('keydown', function (e) {
     ['splashSize', 'Splash size', 'num', 0.1, 2, 0.05],
     ['splashPower', 'Splash power', 'num', 0, 1.5, 0.05]
   );
+
+  // ---- Day 7: river path + lightning / shockwave / slash ----
+  Object.assign(DEF, {
+    kind: 'particles',
+    pathOn: false, pathRev: false, path: null, rw: 30, pathWob: 4,
+    blen: 190, bseg: 16, bjit: 0.3, bbr: 3, bw: 3, bfl: 14,
+    rings: 2, r0: 6, r1: 105, tw0: 18, tw1: 2, squash: 1,
+    sr: 90, sspan: 150, sth: 40, stail: 0.75
+  });
+  function riverPath() {
+    var a = [];
+    for (var i = 0; i <= 40; i++) { var t = i / 40; a.push([0.08 + 0.84 * t, 0.5 + 0.22 * Math.sin(t * Math.PI * 2)]); }
+    return a;
+  }
+  PRE.push(
+    ['🏞 River', Object.assign({}, WATER, { count: 300, duration: 3, shape: 'point', floor: false, pathOn: true,
+      path: riverPath(), rw: 34, pathWob: 5, wobFreq: 0.8, speedMin: 0, speedMax: 0, gravity: 0,
+      lifeMin: 3, lifeMax: 3, sizeStart: 30, sizeEnd: 30, sizeVar: 0.2 })],
+    ['⚡ Lightning', { kind: 'lightning', mode: 'loop', duration: 0.6, ox: 0.5, oy: 0.1, angle: 90, blen: 190, bw: 3,
+      bseg: 16, bjit: 0.3, bbr: 3, bfl: 14, fadeIn: 0, fadeOut: 0.5, c0: '#ffffff', c1: '#7fb8ff', c2: '#3b5bff' }],
+    ['🌀 Shockwave', { kind: 'shockwave', mode: 'burst', duration: 0.8, rings: 2, r0: 6, r1: 105, tw0: 18, tw1: 2,
+      squash: 1, fadeIn: 0, fadeOut: 0.6, c0: '#ffffff', c1: '#ffd36b', c2: '#ff5a1a' }],
+    ['🗡 Slash', { kind: 'slash', mode: 'burst', duration: 0.5, ox: 0.5, oy: 0.55, angle: -20, sr: 90, sspan: 150,
+      sth: 40, stail: 0.75, c0: '#ffffff', c1: '#9fe8ff', c2: '#3a7bff' }]
+  );
+  UI.splice(1, 0, ['kind', 'Effect type', 'sel', [['particles', 'Particles'], ['lightning', 'Lightning'],
+    ['shockwave', 'Shockwave rings'], ['slash', 'Slash trail']]]);
+  UI.push(
+    ['Flow along a path (river / pipe)'],
+    ['pathOn', 'Flow along path', 'chk'], ['pathRev', 'Reverse direction', 'chk'],
+    ['rw', 'River width', 'num', 0, 300, 1], ['pathWob', 'Surface wobble', 'num', 0, 40, 1],
+    ['Lightning (type: Lightning)'],
+    ['blen', 'Bolt length', 'num', 20, 500, 1], ['bw', 'Thickness', 'num', 0.5, 20, 0.5],
+    ['bseg', 'Detail', 'num', 4, 40, 1], ['bjit', 'Jaggedness', 'num', 0, 1, 0.01],
+    ['bbr', 'Branches', 'num', 0, 8, 1], ['bfl', 'Flicker / sec', 'num', 1, 60, 1],
+    ['Shockwave (type: Shockwave)'],
+    ['rings', 'Rings', 'num', 1, 6, 1], ['r0', 'Start radius', 'num', 0, 200, 1], ['r1', 'End radius', 'num', 10, 400, 1],
+    ['tw0', 'Thickness start', 'num', 1, 80, 1], ['tw1', 'Thickness end', 'num', 0.5, 80, 0.5],
+    ['squash', 'Squash (ground view)', 'num', 0.2, 1, 0.05],
+    ['Slash (type: Slash)'],
+    ['sr', 'Radius', 'num', 10, 300, 1], ['sspan', 'Arc span °', 'num', 20, 340, 1],
+    ['sth', 'Thickness', 'num', 4, 140, 1], ['stail', 'Tail length', 'num', 0.1, 1, 0.05]
+  );
+
+  function drawSpecial(c, t, w, h, o) {
+    var D = fx.duration, loop = fx.mode === 'loop';
+    var u0 = loop ? (((t % D) + D) % D) / D : t / D;
+    var ox = fx.ox * w, oy = fx.oy * h;
+    var env = function (u) {
+      var a = fx.opacity;
+      if (fx.fadeIn > 0) a *= Math.min(1, u / fx.fadeIn);
+      if (fx.fadeOut > 0) a *= Math.min(1, (1 - u) / fx.fadeOut);
+      return Math.max(0, a);
+    };
+    function boltPts(r, x0, y0, x1, y1, jit, seg) {
+      var pts = [[x0, y0], [x1, y1]], off = Math.hypot(x1 - x0, y1 - y0) * jit;
+      var iters = Math.max(1, Math.round(Math.log(seg) / Math.LN2));
+      for (var k = 0; k < iters; k++) {
+        var np = [pts[0]];
+        for (var i = 0; i < pts.length - 1; i++) {
+          var a = pts[i], b = pts[i + 1], dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy) || 1;
+          var of = (r() * 2 - 1) * off;
+          np.push([(a[0] + b[0]) / 2 - dy / len * of, (a[1] + b[1]) / 2 + dx / len * of]);
+          np.push(b);
+        }
+        pts = np; off *= 0.55;
+      }
+      return pts;
+    }
+    c.globalCompositeOperation = fx.blend;
+    if (fx.kind === 'lightning' && u0 <= 1) {
+      var r = rng(fx.seed * 7919 + Math.floor(t * fx.bfl)), a = env(u0), ang = fx.angle * Math.PI / 180;
+      var main = boltPts(r, ox, oy, ox + Math.cos(ang) * fx.blen, oy + Math.sin(ang) * fx.blen, fx.bjit, fx.bseg);
+      var bolts = [[main, 1]];
+      for (var b = 0; b < fx.bbr; b++) {
+        var s = main[Math.floor(0.15 * main.length + r() * 0.7 * main.length)];
+        var ba = ang + (r() < 0.5 ? -1 : 1) * (0.35 + r() * 0.6), bl = fx.blen * (0.18 + r() * 0.25);
+        bolts.push([boltPts(r, s[0], s[1], s[0] + Math.cos(ba) * bl, s[1] + Math.sin(ba) * bl, fx.bjit, 8), 0.55]);
+      }
+      c.lineJoin = 'round'; c.lineCap = 'round';
+      [[7, 0.14, fx.c1], [3.2, 0.35, fx.c1], [1, 1, fx.c0]].forEach(function (L) {
+        bolts.forEach(function (B) {
+          c.beginPath();
+          B[0].forEach(function (p, i) { if (i) c.lineTo(p[0], p[1]); else c.moveTo(p[0], p[1]); });
+          c.lineWidth = Math.max(0.6, fx.bw * L[0] * B[1]);
+          c.strokeStyle = L[2]; c.globalAlpha = Math.min(1, a * L[1]);
+          c.stroke();
+        });
+      });
+      var gr = c.createRadialGradient(ox, oy, 0, ox, oy, Math.max(8, fx.blen * 0.18));
+      gr.addColorStop(0, fx.c0); gr.addColorStop(1, 'rgba(' + hexRgb(fx.c1).join(',') + ',0)');
+      c.globalAlpha = Math.min(1, a * 0.6); c.fillStyle = gr; c.fillRect(0, 0, w, h);
+    } else if (fx.kind === 'shockwave') {
+      var n = Math.max(1, Math.round(fx.rings));
+      for (var i = 0; i < n; i++) {
+        var ph = loop ? ((((t / D) + i / n) % 1) + 1) % 1 : (t / D - i * 0.12);
+        if (ph < 0 || ph > 1) continue;
+        var e = 1 - Math.pow(1 - ph, 3), rr = lerp(fx.r0, fx.r1, e), th = Math.max(0.5, lerp(fx.tw0, fx.tw1, ph)), al = env(ph);
+        c.save(); c.translate(ox, oy); c.scale(1, fx.squash);
+        c.beginPath(); c.arc(0, 0, rr, 0, TAU);
+        c.strokeStyle = colAt(ph); c.lineWidth = th * 2.6; c.globalAlpha = Math.min(1, al * 0.3); c.stroke();
+        c.strokeStyle = colAt(Math.min(1, ph * 0.5)); c.lineWidth = th; c.globalAlpha = Math.min(1, al); c.stroke();
+        c.restore();
+      }
+    } else if (fx.kind === 'slash' && u0 < 1) {
+      var sweep = Math.min(1, u0 / 0.35), p = 1 - Math.pow(1 - sweep, 3), d2r = Math.PI / 180;
+      var a0 = fx.angle - fx.sspan / 2, head = a0 + fx.sspan * p, tail = a0 + fx.sspan * Math.max(0, p - fx.stail);
+      var fade = (u0 < 0.35 ? 1 : 1 - (u0 - 0.35) / 0.65) * fx.opacity, N = 40, R = fx.sr;
+      var P = function (A, rad) { return [ox + Math.cos(A) * rad, oy + Math.sin(A) * rad]; };
+      for (var k = 0; k < N; k++) {
+        var s0 = k / N, s1 = (k + 1) / N;
+        var A0 = (tail + (head - tail) * s0) * d2r, A1 = (tail + (head - tail) * s1 + 0.6) * d2r;
+        var t0 = fx.sth / 2 * Math.pow(Math.sin(Math.PI * s0), 0.7), t1 = fx.sth / 2 * Math.pow(Math.sin(Math.PI * s1), 0.7);
+        var q1 = P(A0, R + t0), q2 = P(A1, R + t1), q3 = P(A1, R - t1), q4 = P(A0, R - t0);
+        c.beginPath(); c.moveTo(q1[0], q1[1]); c.lineTo(q2[0], q2[1]); c.lineTo(q3[0], q3[1]); c.lineTo(q4[0], q4[1]); c.closePath();
+        c.fillStyle = colAt(1 - s1); c.globalAlpha = Math.max(0, Math.min(1, fade * (0.2 + 0.8 * s1)));
+        c.fill();
+      }
+    }
+    c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+    if (o.guide) {
+      c.strokeStyle = 'rgba(0,200,255,0.9)'; c.lineWidth = 1;
+      c.beginPath(); c.moveTo(ox - 8, oy); c.lineTo(ox + 8, oy); c.moveTo(ox, oy - 8); c.lineTo(ox, oy + 8); c.stroke();
+    }
+  }
 
   var fx = Object.assign({}, DEF);
   var parts = [], ramp = [], customBase = null, baseCache = {};
@@ -5442,7 +5591,26 @@ document.addEventListener('keydown', function (e) {
       return ((t ^ t >>> 14) >>> 0) / 4294967296;
     };
   }
+    function pathPoint(u) {
+    var P = fx.path, n = P.length - 1;
+    u = clamp(u, 0, 1);
+    var f = u * n, i = Math.min(n - 1, Math.floor(f)), t = f - i, a = P[i], b = P[i + 1];
+    var dx = (b[0] - a[0]) * fx.w, dy = (b[1] - a[1]) * fx.h, len = Math.hypot(dx, dy) || 1;
+    return { x: lerp(a[0], b[0], t) * fx.w - fx.ox * fx.w, y: lerp(a[1], b[1], t) * fx.h - fx.oy * fx.h, nx: -dy / len, ny: dx / len };
+  }
+  function flowPos(p, age) {
+    var u = age / p.life;
+    if (fx.pathRev) u = 1 - u;
+    var q = pathPoint(u);
+    var off = (p.ph * 2 - 1) * fx.rw / 2 + fx.pathWob * Math.sin(TAU * (fx.wobFreq * age + p.ph * 3));
+    return { x: q.x + q.nx * off, y: q.y + q.ny * off };
+  }
+
   function stateAt(p, age) {
+    if (fx.pathOn && fx.path && fx.path.length > 1 && !p.plain) {
+      var q0 = flowPos(p, age), q1 = flowPos(p, age + 0.02);
+      return { x: q0.x, y: q0.y, vx: (q1.x - q0.x) / 0.02, vy: (q1.y - q0.y) / 0.02 };
+    }
     var k = p.k != null ? p.k : fx.drag, g = p.g != null ? p.g : fx.gravity, x, y, vx, vy;
     if (k < 1e-4) {
       x = p.px + p.vx * age; y = p.py + p.vy * age + 0.5 * g * age * age;
@@ -5468,6 +5636,7 @@ document.addEventListener('keydown', function (e) {
 
   // when does this particle reach the floor? (null = never)
   function landing(p, floorRel, maxAge) {
+    if (fx.pathOn || fx.kind !== 'particles') return null;
     var step = 0.02, prev = 0, t = 0;
     while (t < maxAge) {
       t = Math.min(maxAge, t + step);
@@ -5543,6 +5712,7 @@ document.addEventListener('keydown', function (e) {
     c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
     c.clearRect(0, 0, w, h);
     if (o.bg) { c.fillStyle = o.bg; c.fillRect(0, 0, w, h); }
+    if (fx.kind && fx.kind !== 'particles') { drawSpecial(c, t, w, h, o); return; }
     var ox = fx.ox * w, oy = fx.oy * h, D = fx.duration, loop = fx.mode === 'loop';
     var g = c;
     if (fx.liquid) {
@@ -5709,6 +5879,33 @@ document.addEventListener('keydown', function (e) {
     '<input type="file" id="vx-openfile" accept=".json,application/json" hidden>' +
     '<p class="vhint">Tap or drag on the preview to move the emitter. Use a Black background for additive (glow) effects if your game does not use additive blending.</p>');
 
+  (function () {
+    var vb = right.querySelector('.vbtns');
+    [['vx-gif', '⬇ Animated GIF'], ['vx-webm', '⬇ WebM video']].forEach(function (d) {
+      var b = document.createElement('button'); b.id = d[0]; b.textContent = d[1]; vb.insertBefore(b, vb.firstChild.nextSibling);
+    });
+    function guard() {
+      if (nFrames() * fx.w * fx.h > 20000000) { alert('Too large. Use a smaller frame size, a shorter duration or a lower FPS.'); return false; }
+      return true;
+    }
+    $('vx-gif').addEventListener('click', async function () {
+      if (!guard()) return;
+      var bg = exportBg();
+      try {
+        var blob = await MediaExport.gif(function (i) { return frameCanvas(i, bg); }, nFrames(), fx.w, fx.h, fx.fps, !bg, fx.mode === 'loop', say);
+        downloadBlob(blob, fname() + '.gif'); say('GIF saved');
+      } catch (err) { alert('GIF export failed: ' + err.message); }
+    });
+    $('vx-webm').addEventListener('click', async function () {
+      if (!guard()) return;
+      var bg = exportBg() || '#000000';
+      try {
+        var blob = await MediaExport.webm(function (i) { return frameCanvas(i, bg); }, nFrames(), fx.w, fx.h, fx.fps, fx.mode === 'loop' ? 3 : 1, bg, say);
+        downloadBlob(blob, fname() + '.webm'); say('Video saved');
+      } catch (err) { alert('Video export failed: ' + err.message); }
+    });
+  })();
+
   // presets + custom sprite buttons (left column)
   var presetBtns = [];
   PRE.forEach(function (p) {
@@ -5728,6 +5925,23 @@ document.addEventListener('keydown', function (e) {
   leftBtn('vs-sel', 'From selection', 'Use the shape you had selected on the canvas as the particle');
   leftBtn('vs-img', 'Import image', 'Use a PNG/JPG as the particle');
   left.insertAdjacentHTML('beforeend', '<input type="file" id="vs-file" accept="image/*" hidden>');
+
+  leftBtn('vs-path', 'Path from selection', 'Use the path selected on the canvas as the river / pipe path');
+  $('vs-path').addEventListener('click', function () {
+    var it = selection.length ? selection[0] : null;
+    var path = it && (it.className === 'Path' ? it : (it.className === 'CompoundPath' ? it.children[0] : null));
+    if (!path || !path.length) { say('Close VFX, select a path (pen or line) on the canvas, then open VFX again'); return; }
+    var N = 48, len = path.length, pts = [], i;
+    for (i = 0; i <= N; i++) pts.push(path.localToGlobal(path.getPointAt(len * i / N)));
+    var x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    pts.forEach(function (p) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); });
+    var s = Math.min(0.8 * fx.w / Math.max(x1 - x0, 1), 0.8 * fx.h / Math.max(y1 - y0, 1)), cx0 = (x0 + x1) / 2, cy0 = (y0 + y1) / 2;
+    fx.path = pts.map(function (p) { return [((p.x - cx0) * s + fx.w / 2) / fx.w, ((p.y - cy0) * s + fx.h / 2) / fx.h]; });
+    fx.pathOn = true; fx.kind = 'particles';
+    ctrls.pathOn(); ctrls.kind();
+    refresh('path');
+    say('Path loaded. Tune River width and Wobble.');
+  });
 
   function syncAll() {
     Object.keys(ctrls).forEach(function (k) { ctrls[k](); });
@@ -6334,4 +6548,555 @@ document.addEventListener('keydown', function (e) {
 
   buildMarkers();
   syncVisibility();
+})();
+
+// ======================================================
+// DAY 7-A: GIF + WEBM EXPORT
+// ======================================================
+window.MediaExport = (function () {
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+  function medianCut(hist, n) {
+    var colors = [];
+    for (var k = 0; k < 32768; k++) {
+      if (hist[k]) colors.push({ c: [(k >> 10) & 31, (k >> 5) & 31, k & 31], n: hist[k] });
+    }
+    if (!colors.length) return [[0, 0, 0]];
+    var boxes = [colors];
+    while (boxes.length < n) {
+      var bi = -1, best = 0, ch = 0;
+      for (var i = 0; i < boxes.length; i++) {
+        var bx = boxes[i];
+        if (bx.length < 2) continue;
+        var mn = [31, 31, 31], mx = [0, 0, 0], q;
+        for (var j = 0; j < bx.length; j++) {
+          for (q = 0; q < 3; q++) {
+            var v = bx[j].c[q];
+            if (v < mn[q]) mn[q] = v;
+            if (v > mx[q]) mx[q] = v;
+          }
+        }
+        for (q = 0; q < 3; q++) {
+          if (mx[q] - mn[q] > best) { best = mx[q] - mn[q]; bi = i; ch = q; }
+        }
+      }
+      if (bi < 0) break;
+      var box = boxes[bi];
+      box.sort(function (a, b) { return a.c[ch] - b.c[ch]; });
+      var total = 0, acc = 0, cut = 1, z;
+      for (z = 0; z < box.length; z++) total += box[z].n;
+      for (z = 0; z < box.length - 1; z++) {
+        acc += box[z].n; cut = z + 1;
+        if (acc >= total / 2) break;
+      }
+      boxes.splice(bi, 1, box.slice(0, cut), box.slice(cut));
+    }
+    return boxes.map(function (b) {
+      var s = [0, 0, 0], t = 0;
+      b.forEach(function (o) { t += o.n; for (var q = 0; q < 3; q++) s[q] += o.c[q] * o.n; });
+      return s.map(function (v) { return Math.round(v / t * 255 / 31); });
+    });
+  }
+
+  function nearest(key, pal, off) {
+    var r = ((key >> 10) & 31) * 255 / 31, g = ((key >> 5) & 31) * 255 / 31, b = (key & 31) * 255 / 31;
+    var best = 0, bd = 1e12;
+    for (var i = 0; i < pal.length; i++) {
+      var p = pal[i], d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best + off;
+  }
+
+  function lzw(idx, minCode) {
+    var clear = 1 << minCode, eoi = clear + 1, next = eoi + 1, size = minCode + 1;
+    var dict = new Map(), out = [], cur = 0, bits = 0;
+    function emit(code) {
+      cur |= code << bits; bits += size;
+      while (bits >= 8) { out.push(cur & 255); cur >>>= 8; bits -= 8; }
+    }
+    emit(clear);
+    var prefix = idx[0];
+    for (var i = 1; i < idx.length; i++) {
+      var k = idx[i], key = prefix * 256 + k, v = dict.get(key);
+      if (v !== undefined) { prefix = v; continue; }
+      emit(prefix);
+      if (next === 4096) { emit(clear); dict.clear(); next = eoi + 1; size = minCode + 1; }
+      else { if (next >= (1 << size)) size++; dict.set(key, next++); }
+      prefix = k;
+    }
+    emit(prefix); emit(eoi);
+    if (bits > 0) out.push(cur & 255);
+    return out;
+  }
+
+  async function gif(getFrame, n, w, h, fps, transparent, loop, say) {
+    var datas = [], i;
+    for (i = 0; i < n; i++) {
+      datas.push(getFrame(i).getContext('2d').getImageData(0, 0, w, h).data);
+      if (say) say('GIF: rendering ' + (i + 1) + ' / ' + n);
+      if (i % 2) await sleep(0);
+    }
+    var hist = new Int32Array(32768), stride = Math.max(1, Math.floor(w * h * n / 1500000));
+    datas.forEach(function (d) {
+      for (var p = 0; p < d.length; p += 4 * stride) {
+        if (d[p + 3] >= 128) hist[((d[p] >> 3) << 10) | ((d[p + 1] >> 3) << 5) | (d[p + 2] >> 3)]++;
+      }
+    });
+    var off = transparent ? 1 : 0, pal = medianCut(hist, 256 - off);
+    var gct = new Uint8Array(768);
+    pal.forEach(function (c, k) { gct[(k + off) * 3] = c[0]; gct[(k + off) * 3 + 1] = c[1]; gct[(k + off) * 3 + 2] = c[2]; });
+    var cache = new Int16Array(32768).fill(-1);
+    var parts = [new Uint8Array([71, 73, 70, 56, 57, 97, w & 255, w >> 8, h & 255, h >> 8, 0xF7, 0, 0]), gct];
+    if (loop) parts.push(new Uint8Array([0x21, 0xFF, 0x0B, 78, 69, 84, 83, 67, 65, 80, 69, 50, 46, 48, 3, 1, 0, 0, 0]));
+    var delay = Math.max(2, Math.round(100 / fps));
+    for (i = 0; i < n; i++) {
+      var d = datas[i], idx = new Uint8Array(w * h);
+      for (var p = 0; p < w * h; p++) {
+        var q = p * 4;
+        if (transparent && d[q + 3] < 128) { idx[p] = 0; continue; }
+        var key = ((d[q] >> 3) << 10) | ((d[q + 1] >> 3) << 5) | (d[q + 2] >> 3), v = cache[key];
+        if (v < 0) { v = nearest(key, pal, off); cache[key] = v; }
+        idx[p] = v;
+      }
+      parts.push(new Uint8Array([0x21, 0xF9, 4, transparent ? 9 : 4, delay & 255, delay >> 8, 0, 0]));
+      parts.push(new Uint8Array([0x2C, 0, 0, 0, 0, w & 255, w >> 8, h & 255, h >> 8, 0, 8]));
+      var codes = lzw(idx, 8), L = codes.length, buf = new Uint8Array(L + Math.ceil(L / 255) + 1), bp = 0;
+      for (var s = 0; s < L; s += 255) {
+        var sz = Math.min(255, L - s);
+        buf[bp++] = sz;
+        for (var zz = 0; zz < sz; zz++) buf[bp++] = codes[s + zz];
+      }
+      buf[bp++] = 0;
+      parts.push(buf);
+      if (say) say('GIF: encoding ' + (i + 1) + ' / ' + n);
+      await sleep(0);
+    }
+    parts.push(new Uint8Array([0x3B]));
+    return new Blob(parts, { type: 'image/gif' });
+  }
+
+  async function webm(getFrame, n, w, h, fps, loops, bg, say) {
+    if (!window.MediaRecorder) throw new Error('This browser cannot record video. Use GIF instead.');
+    var cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    if (!cv.captureStream) throw new Error('This browser cannot record video. Use GIF instead.');
+    var frames = [], i;
+    for (i = 0; i < n; i++) {
+      frames.push(getFrame(i));
+      if (say) say('Video: rendering ' + (i + 1) + ' / ' + n);
+      if (i % 2) await sleep(0);
+    }
+    var ctx = cv.getContext('2d');
+    var stream = cv.captureStream(0), track = stream.getVideoTracks()[0], manual = !!(track && track.requestFrame);
+    if (!manual) stream = cv.captureStream(fps);
+    var mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+      .filter(function (t) { return MediaRecorder.isTypeSupported(t); })[0];
+    if (!mime) throw new Error('WebM recording is not supported here. Use GIF instead.');
+    var rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 }), chunks = [];
+    rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    var done = new Promise(function (res) { rec.onstop = res; });
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+    rec.start();
+    var t0 = performance.now(), k = 0;
+    for (var L = 0; L < loops; L++) {
+      for (i = 0; i < n; i++) {
+        ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(frames[i], 0, 0);
+        if (manual) track.requestFrame();
+        k++;
+        await sleep(Math.max(1, t0 + k * 1000 / fps - performance.now()));
+      }
+    }
+    await sleep(150);
+    rec.stop();
+    await done;
+    return new Blob(chunks, { type: 'video/webm' });
+  }
+  return { gif: gif, webm: webm };
+})();
+
+// ---- Export tab: animation GIF / WebM of the orange frame ----
+(function () {
+  var pane = document.querySelector('.tab-pane[data-pane="export"]');
+  if (!pane) return;
+  var say = function (m) { if (window.toast) window.toast(m); };
+  pane.insertAdjacentHTML('beforeend',
+    '<h3 class="section-title">Animation (GIF / video)</h3>' +
+    '<label class="prop-row">Scale % <input type="number" id="am-scale" value="100" min="10" max="400"></label>' +
+    '<label class="prop-row">From frame <input type="number" id="am-from" value="0" min="0"></label>' +
+    '<label class="prop-row">To frame <input type="number" id="am-to" min="0" placeholder="last"></label>' +
+    '<label class="prop-row">File name <input type="text" id="am-name" value="animation" style="width:100px"></label>' +
+    '<div class="layer-actions"><button id="am-gif">⬇ GIF</button><button id="am-webm">⬇ WebM video</button></div>' +
+    '<p class="hint">Records the orange frame at the animation FPS. Background: Transparent gives a transparent GIF. WebM always uses a color, black if Transparent. The GIF loops forever.</p>');
+  var el = function (id) { return document.getElementById(id); };
+
+  async function run(kind) {
+    var A = window.animApi;
+    if (!A) { alert('Animation hook (A2) is missing.'); return; }
+    var len = A.anim.length;
+    var from = Math.max(0, Math.min(len - 1, Math.round(Number(el('am-from').value) || 0)));
+    var toRaw = el('am-to').value;
+    var to = toRaw === '' ? len - 1 : Math.max(from, Math.min(len - 1, Math.round(Number(toRaw) || 0)));
+    var sc = Math.max(10, Math.min(400, Number(el('am-scale').value) || 100)) / 100;
+    var W = Math.max(1, Math.round(frame.w * sc)), H = Math.max(1, Math.round(frame.h * sc)), n = to - from + 1;
+    if (W > 1024 || H > 1024 || W * H * n > 30000000) {
+      alert('Too big (' + W + ' x ' + H + ', ' + n + ' frames). Lower the Scale % or the frame range.');
+      return;
+    }
+    A.stop();
+    var keep = A.frame(), area = new paper.Rectangle(frame.x, frame.y, frame.w, frame.h);
+    var bg = expBg.value === 'color' ? expBgColor.value : null;
+    var name = (el('am-name').value || 'animation').replace(/[^\w\-]+/g, '_');
+    var getFrame = function (i) { A.applyFrame(from + i); return renderArea(area, W, H, false, bg); };
+    try {
+      var blob = kind === 'gif'
+        ? await MediaExport.gif(getFrame, n, W, H, A.anim.fps, !bg, true, say)
+        : await MediaExport.webm(getFrame, n, W, H, A.anim.fps, 1, bg || '#000000', say);
+      downloadBlob(blob, name + (kind === 'gif' ? '.gif' : '.webm'));
+      say('Saved ' + name);
+    } catch (err) { alert('Export failed: ' + err.message); }
+    A.applyFrame(keep);
+    paper.project._needsUpdate = true;
+    paper.view.update();
+  }
+  el('am-gif').addEventListener('click', function () { run('gif'); });
+  el('am-webm').addEventListener('click', function () { run('webm'); });
+})();
+
+// ======================================================
+// DAY 7-B: ELLIPSE ARC HANDLES
+// ======================================================
+(function () {
+  var st = document.createElement('style');
+  st.textContent =
+    '.arc-h{position:absolute;display:none;z-index:11;width:18px;height:18px;transform:translate(-50%,-50%);' +
+    'border:3px solid #fff;border-radius:50%;box-shadow:0 0 0 2px #000;touch-action:none;cursor:grab}' +
+    '.arc-h::before{content:"";position:absolute;inset:-14px}' +
+    '@media (pointer:coarse){.arc-h{width:24px;height:24px}}';
+  document.head.appendChild(st);
+
+  var hS = document.createElement('div'), hE = document.createElement('div');
+  hS.className = hE.className = 'arc-h';
+  hS.style.background = '#00e676'; hE.style.background = '#ff3d71';
+  hS.title = 'Arc start (Shift = snap 15°)'; hE.title = 'Arc end (Shift = snap 15°)';
+  canvasArea.appendChild(hS); canvasArea.appendChild(hE);
+
+  function current() {
+    if (!window.ellApi || selection.length !== 1) return null;
+    if (currentToolName !== 'select' && currentToolName !== 'ellipse') return null;
+    return window.ellApi.ellOf(selection[0]);
+  }
+
+  function drag(el, which) {
+    el.addEventListener('pointerdown', function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      el.setPointerCapture(ev.pointerId);
+      var moved = false;
+      function mv(e2) {
+        var p = current();
+        if (!p) return;
+        var e = p.data.ell, inv = mxFrom(e.M).inverted();
+        if (!inv) return;
+        var lp = inv.transform(mouseToProject(e2));
+        var deg = Math.atan2(lp.y, lp.x) * 180 / Math.PI;
+        if (e2.shiftKey) deg = Math.round(deg / 15) * 15;
+        if (e.type === 'whole') e.type = 'slice';
+        e[which] = Math.round(deg * 10) / 10;
+        window.ellApi.rebuild(p);
+        window.ellApi.sync(p);
+        paper.project._needsUpdate = true;
+        paper.view.update();
+        moved = true;
+      }
+      function up() {
+        el.removeEventListener('pointermove', mv);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        if (moved) saveState();
+      }
+      el.addEventListener('pointermove', mv);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    });
+  }
+  drag(hS, 'start'); drag(hE, 'end');
+
+  function place(el, M, deg) {
+    var a = deg * Math.PI / 180;
+    var v = paper.view.projectToView(M.transform(new paper.Point(Math.cos(a), Math.sin(a))));
+    el.style.display = 'block'; el.style.left = v.x + 'px'; el.style.top = v.y + 'px';
+  }
+  var prev = window.tickTimeline;
+  window.tickTimeline = function (e) {
+    if (prev) prev(e);
+    var p = current();
+    if (!p) { hS.style.display = hE.style.display = 'none'; return; }
+    var el = p.data.ell, M = mxFrom(el.M);
+    place(hS, M, el.start); place(hE, M, el.end);
+  };
+})();
+
+// ======================================================
+// DAY 7-C: GRADIENT STROKES
+// ======================================================
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var say = function (m) { if (window.toast) window.toast(m); };
+  var S = { type: 'solid', c2: '#ff4d6d', a2: 100 };
+
+  strokeInput.closest('.prop-row').insertAdjacentHTML('afterend',
+    '<label class="prop-row">Stroke type<select id="stroke-type">' +
+    '<option value="solid">Solid</option><option value="linear">Linear gradient</option><option value="radial">Radial gradient</option></select></label>' +
+    '<label class="prop-row" id="sc2-row" style="display:none">Stroke color 2<input type="color" id="stroke-color2" value="#ff4d6d"></label>' +
+    '<div class="layer-actions" id="sc-copy" style="display:none"><button id="stroke-from-fill">Copy fill gradient to stroke</button></div>');
+
+  function showRows() {
+    var on = S.type !== 'solid';
+    $('sc2-row').style.display = on ? '' : 'none';
+    $('sc-copy').style.display = on ? '' : 'none';
+  }
+  function geom(item, radial) {
+    var b = item.bounds;
+    if (radial) {
+      var r = Math.max(Math.max(b.width, b.height) / 2, 1);
+      return [b.center, b.center.add(new paper.Point(r, 0))];
+    }
+    var a = (Number(gradAngleInput.value) || 0) * Math.PI / 180, dir = new paper.Point(Math.cos(a), Math.sin(a));
+    var len = Math.abs(b.width * dir.x) + Math.abs(b.height * dir.y);
+    return [b.center.subtract(dir.multiply(len / 2)), b.center.add(dir.multiply(len / 2))];
+  }
+  function makeStroke(item, force) {
+    if (S.type === 'solid') return colorWithAlpha(strokeInput.value, Number(strokeOpInput.value));
+    var radial = S.type === 'radial', sc = item.strokeColor, g;
+    if (!force && sc && sc.type === 'gradient' && !!sc.gradient.radial === radial && sc.origin && sc.destination) {
+      g = [sc.origin.clone(), sc.destination.clone()];
+    } else g = geom(item, radial);
+    return {
+      gradient: { stops: [colorWithAlpha(strokeInput.value, Number(strokeOpInput.value)), colorWithAlpha(S.c2, S.a2)], radial: radial },
+      origin: g[0], destination: g[1]
+    };
+  }
+  function apply(force) {
+    selection.forEach(function (i) {
+      eachStrokeLeaf(i, function (l) {
+        if (l.className === 'Raster') return;
+        if (S.type !== 'solid' && !l.strokeWidth) l.strokeWidth = 2;
+        l.strokeColor = makeStroke(l, force);
+      });
+    });
+    forceRedraw();
+  }
+
+  $('stroke-type').addEventListener('change', function () {
+    S.type = this.value; showRows();
+    if (selection.length) { apply(true); saveState(); }
+  });
+  $('stroke-color2').addEventListener('click', function (e) {
+    e.preventDefault();
+    var el = this;
+    ColorPicker.open(el, S.c2, S.a2, function (hex, a, fin) {
+      S.c2 = hex; S.a2 = a; el.value = hex;
+      if (selection.length) apply(false);
+      if (fin && selection.length) saveState();
+    }, { alpha: true });
+  });
+
+  // the stroke colour swatch must keep the gradient instead of overwriting it
+  var origApply = applyStrokeToSelection;
+  strokeInput.removeEventListener('input', origApply);
+  applyStrokeToSelection = function () {
+    style.stroke = colorWithAlpha(strokeInput.value, Number(strokeOpInput.value));
+    if (S.type === 'solid') origApply(); else apply(false);
+  };
+  strokeInput.addEventListener('input', applyStrokeToSelection);
+
+  gradAngleInput.addEventListener('input', function () {
+    if (S.type === 'linear' && selection.length) apply(true);
+  });
+
+  $('stroke-from-fill').addEventListener('click', function () {
+    if (!selection.length) { say('Select a shape first'); return; }
+    var n = 0, radial = false;
+    selection.forEach(function (i) {
+      eachStrokeLeaf(i, function (l) {
+        var fc = l.fillColor;
+        if (!fc || fc.type !== 'gradient') return;
+        radial = !!fc.gradient.radial;
+        l.strokeColor = {
+          gradient: { stops: fc.gradient.stops.map(function (s) { return [s.color.clone(), s.offset]; }), radial: radial },
+          origin: fc.origin.clone(), destination: fc.destination.clone()
+        };
+        if (!l.strokeWidth) l.strokeWidth = 4;
+        n++;
+      });
+    });
+    if (!n) { say('The fill must be a gradient first'); return; }
+    S.type = radial ? 'radial' : 'linear';
+    $('stroke-type').value = S.type; showRows();
+    forceRedraw(); saveState();
+  });
+
+  var _s = syncPanelFromItem;
+  syncPanelFromItem = function (item) {
+    _s(item);
+    var l = item;
+    while (l && l.className === 'Group' && l.children.length) l = l.children[0];
+    var sc = l && l.strokeColor;
+    if (sc && sc.type === 'gradient') {
+      var stops = sc.gradient.stops, f = stops[0].color, e = stops[stops.length - 1].color;
+      S.type = sc.gradient.radial ? 'radial' : 'linear';
+      strokeInput.value = f.toCSS(true);
+      S.c2 = e.toCSS(true);
+      S.a2 = Math.round((e.alpha == null ? 1 : e.alpha) * 100);
+    } else if (l) S.type = 'solid';
+    $('stroke-type').value = S.type;
+    $('stroke-color2').value = S.c2;
+    showRows();
+  };
+})();
+
+// ======================================================
+// DAY 7-D: ANIMATION CURVE EDITOR
+// ======================================================
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var say = function (m) { if (window.toast) window.toast(m); };
+  var clamp = function (x, a, b) { return Math.min(b, Math.max(a, x)); };
+  var Q = [1 / 3, 0, 2 / 3, 1];
+  var NAMED = { linear: [0, 0, 1, 1], smooth: [1 / 3, 0, 2 / 3, 1], 'in': [1 / 3, 0, 2 / 3, 1 / 3], out: [1 / 3, 2 / 3, 2 / 3, 1] };
+  var PRESETS = [['Linear', [0, 0, 1, 1]], ['Smooth', [1 / 3, 0, 2 / 3, 1]], ['Ease in', [1 / 3, 0, 2 / 3, 1 / 3]],
+    ['Ease out', [1 / 3, 2 / 3, 2 / 3, 1]], ['Sharp', [0.75, 0, 0.25, 1]], ['Overshoot', [0.34, 1.56, 0.64, 1]],
+    ['Anticipate', [0.36, 0, 0.66, -0.56]]];
+  var SZ = 240, PAD = 28, YMIN = -0.7, YMAX = 1.7, open = false, drag = -1;
+
+  var st = document.createElement('style');
+  st.textContent =
+    '#cv-ed{position:fixed;z-index:95000;display:none;width:260px;padding:8px;background:#2a2a2a;color:#ddd;border:1px solid #555;' +
+    'border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.6);font:12px system-ui,sans-serif}' +
+    '#cv-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}' +
+    '#cv-ed button{background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:5px;padding:5px 8px;cursor:pointer;font-size:12px}' +
+    '#cv-c{display:block;touch-action:none;background:#1e1e1e;border-radius:6px}' +
+    '#cv-p{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}#cv-i{margin-top:6px;color:#999;font-size:11px;min-height:28px}' +
+    '@media (pointer:coarse){#cv-ed button{padding:9px 11px}}';
+  document.head.appendChild(st);
+
+  var box = document.createElement('div');
+  box.id = 'cv-ed';
+  box.innerHTML = '<div id="cv-h"><b>Motion curve</b><button id="cv-x">✕</button></div>' +
+    '<canvas id="cv-c" width="' + SZ + '" height="' + SZ + '"></canvas><div id="cv-i"></div><div id="cv-p"></div>';
+  document.body.appendChild(box);
+  var cv = $('cv-c'), cx = cv.getContext('2d'), info = $('cv-i');
+
+  var btn = document.createElement('button');
+  btn.id = 'tl-curve'; btn.textContent = '〰 Curve';
+  btn.title = 'Edit the motion curve between two keys';
+  $('tl-bar').appendChild(btn);
+
+  var X = function (v) { return PAD + v * (SZ - 2 * PAD); };
+  var Y = function (v) { return PAD + (YMAX - v) / (YMAX - YMIN) * (SZ - 2 * PAD); };
+  function bez(s) {
+    var m = 1 - s;
+    return [3 * m * m * s * Q[0] + 3 * m * s * s * Q[2] + s * s * s, 3 * m * m * s * Q[1] + 3 * m * s * s * Q[3] + s * s * s];
+  }
+  function ease(t) {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    var lo = 0, hi = 1, s = t;
+    for (var i = 0; i < 22; i++) { s = (lo + hi) / 2; if (bez(s)[0] < t) lo = s; else hi = s; }
+    return bez(s)[1];
+  }
+
+  function targets() {
+    var out = [];
+    function add(i) { if (out.indexOf(i) < 0) { out.push(i); childrenOf(i).forEach(add); } }
+    selection.forEach(function (s) { add(topLevelItem(s)); });
+    return out;
+  }
+  function segKey(it, f) {
+    var ks = it.data && it.data.keys, best = null;
+    if (!ks) return null;
+    Object.keys(ks).forEach(function (k) { k = Number(k); if (k <= f && (best === null || k > best)) best = k; });
+    return best === null ? null : ks[best];
+  }
+  function loadQ() {
+    var A = window.animApi, f = A ? A.frame() : 0, found = false;
+    targets().forEach(function (it) {
+      if (found) return;
+      var k = segKey(it, f);
+      if (!k) return;
+      found = true;
+      var e = k.e;
+      if (typeof e === 'string' && e.indexOf('bez:') === 0) Q = e.slice(4).split(',').map(Number);
+      else if (NAMED[e]) Q = NAMED[e].slice();
+    });
+    info.textContent = found
+      ? 'Frame ' + f + ': edits the curve of the segment after the key at or before this frame. Drag the two dots.'
+      : 'Select an object that has keys, then open this again.';
+  }
+  function applyCurve(final) {
+    var A = window.animApi;
+    if (!A) return;
+    var f = A.frame(), any = false;
+    var str = 'bez:' + Q.map(function (v) { return Math.round(v * 1000) / 1000; }).join(',');
+    targets().forEach(function (it) { var k = segKey(it, f); if (k) { k.e = str; any = true; } });
+    if (any) { A.refresh(); if (final) A.commit(); }
+  }
+
+  function paint() {
+    if (!open) return;
+    requestAnimationFrame(paint);
+    cx.clearRect(0, 0, SZ, SZ);
+    cx.strokeStyle = '#444'; cx.lineWidth = 1;
+    [0, 1].forEach(function (v) { cx.beginPath(); cx.moveTo(PAD, Y(v)); cx.lineTo(SZ - PAD, Y(v)); cx.stroke(); });
+    cx.setLineDash([4, 4]); cx.strokeStyle = '#666';
+    cx.beginPath(); cx.moveTo(X(0), Y(0)); cx.lineTo(X(1), Y(1)); cx.stroke(); cx.setLineDash([]);
+    cx.strokeStyle = '#888';
+    cx.beginPath(); cx.moveTo(X(0), Y(0)); cx.lineTo(X(Q[0]), Y(Q[1]));
+    cx.moveTo(X(1), Y(1)); cx.lineTo(X(Q[2]), Y(Q[3])); cx.stroke();
+    cx.strokeStyle = '#ff9f1c'; cx.lineWidth = 3; cx.beginPath();
+    for (var s = 0; s <= 1.0001; s += 0.02) { var p = bez(s); if (s === 0) cx.moveTo(X(p[0]), Y(p[1])); else cx.lineTo(X(p[0]), Y(p[1])); }
+    cx.stroke();
+    var u = (performance.now() % 1600) / 1600, y = ease(u);
+    cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(X(u), Y(y), 5, 0, 6.3); cx.fill();
+    cx.fillStyle = '#00e676'; cx.beginPath(); cx.arc(SZ - 10, Y(y), 5, 0, 6.3); cx.fill();
+    [[Q[0], Q[1], '#2f6fed'], [Q[2], Q[3], '#ff3d71']].forEach(function (h) {
+      cx.fillStyle = h[2]; cx.strokeStyle = '#fff'; cx.lineWidth = 2;
+      cx.beginPath(); cx.arc(X(h[0]), Y(h[1]), 9, 0, 6.3); cx.fill(); cx.stroke();
+    });
+  }
+  function pos(e) { var r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+  function setHandle(i, p) {
+    Q[i * 2] = clamp((p[0] - PAD) / (SZ - 2 * PAD), 0, 1);
+    Q[i * 2 + 1] = clamp(YMAX - (p[1] - PAD) / (SZ - 2 * PAD) * (YMAX - YMIN), YMIN, YMAX);
+  }
+  cv.addEventListener('pointerdown', function (e) {
+    e.preventDefault(); cv.setPointerCapture(e.pointerId);
+    var p = pos(e), d0 = Math.hypot(p[0] - X(Q[0]), p[1] - Y(Q[1])), d1 = Math.hypot(p[0] - X(Q[2]), p[1] - Y(Q[3]));
+    drag = d0 <= d1 ? 0 : 1;
+    setHandle(drag, p); applyCurve(false);
+  });
+  cv.addEventListener('pointermove', function (e) { if (drag >= 0) { setHandle(drag, pos(e)); applyCurve(false); } });
+  function endDrag() { if (drag >= 0) { drag = -1; applyCurve(true); } }
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
+
+  PRESETS.forEach(function (p) {
+    var b = document.createElement('button');
+    b.textContent = p[0];
+    b.addEventListener('click', function () { Q = p[1].slice(); applyCurve(true); });
+    $('cv-p').appendChild(b);
+  });
+  function close() { open = false; box.style.display = 'none'; }
+  $('cv-x').addEventListener('click', close);
+  btn.addEventListener('click', function () {
+    if (open) { close(); return; }
+    if (!window.animApi) { alert('Animation hook (A2) is missing.'); return; }
+    loadQ();
+    box.style.display = 'block';
+    var r = btn.getBoundingClientRect();
+    box.style.left = clamp(r.left, 8, window.innerWidth - 270) + 'px';
+    box.style.top = Math.max(8, r.top - box.offsetHeight - 8) + 'px';
+    open = true; paint();
+  });
 })();
