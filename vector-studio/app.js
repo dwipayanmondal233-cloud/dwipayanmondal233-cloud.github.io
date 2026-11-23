@@ -4109,10 +4109,18 @@ document.addEventListener('keydown', function (e) {
   }
   function readLook(item) {
     if (!hasLook(item)) return null;
-    var f = item.fillColor;
-    var o = { look: 1, fc: null, fg: null, sc: colArr(item.strokeColor), lw: item.strokeWidth || 0 };
+    var f = item.fillColor, sc = item.strokeColor;
+    var o = { look: 1, fc: null, fg: null, sc: colArr(sc), sg: !!(sc && sc.type === 'gradient'), lw: item.strokeWidth || 0 };
     if (f && f.type === 'gradient') {
+      var n = f.gradient.stops.length;
       o.fg = f.gradient.stops.map(function (s) { return colArr(s.color); });
+      o.fo = f.gradient.stops.map(function (s, i) { return s.offset == null ? i / Math.max(1, n - 1) : s.offset; });
+      o.fr = !!f.gradient.radial;
+      var inv = poseOf(item).inverted();
+      if (inv && f.origin && f.destination) {
+        var a0 = inv.transform(f.origin), a1 = inv.transform(f.destination);
+        o.go = [a0.x, a0.y]; o.gd = [a1.x, a1.y];
+      }
     } else if (f) {
       o.fc = colArr(f);
     }
@@ -4132,10 +4140,22 @@ document.addEventListener('keydown', function (e) {
     var cc = function (a) { return new paper.Color(a[0], a[1], a[2], a[3]); };
     var f = item.fillColor;
     if (k.fg) {
-      if (f && f.type === 'gradient' && f.gradient.stops.length === k.fg.length) {
+      var hasGeo = k.go && k.gd;
+      var same = f && f.type === 'gradient' && f.gradient.stops.length === k.fg.length;
+      if (hasGeo || same) {
+        var M = poseOf(item);
+        var og = hasGeo ? M.transform(new paper.Point(k.go[0], k.go[1])) : f.origin;
+        var de = hasGeo ? M.transform(new paper.Point(k.gd[0], k.gd[1])) : f.destination;
+        var rad = (k.fr != null) ? k.fr : (f && f.type === 'gradient' ? f.gradient.radial : false);
         item.fillColor = {
-          gradient: { stops: k.fg.map(cc), radial: f.gradient.radial },
-          origin: f.origin, destination: f.destination
+          gradient: {
+            stops: k.fg.map(function (a, i) {
+              var off = k.fo ? Math.min(1, Math.max(i === 0 ? 0 : 0.001, k.fo[i])) : null;
+              return off == null ? cc(a) : [cc(a), off];
+            }),
+            radial: !!rad
+          },
+          origin: og, destination: de
         };
       }
     } else if (k.fc) {
@@ -4143,7 +4163,7 @@ document.addEventListener('keydown', function (e) {
     } else if (f) {
       item.fillColor = null;
     }
-    item.strokeColor = k.sc ? cc(k.sc) : null;
+    if (!k.sg) item.strokeColor = k.sc ? cc(k.sc) : null;   // gradient strokes are left alone
     item.strokeWidth = k.lw || 0;
   }
 
@@ -4250,16 +4270,27 @@ document.addEventListener('keydown', function (e) {
       o: (A.o == null || B.o == null) ? A.o : L(A.o, B.o), sw: A.sw, e: A.e
     };
     if (item.data.morph) out.shape = lerpShape(shapeOf(item, A), shapeOf(item, B), t);
-    if (A.look && B.look) {
+     if (A.look && B.look) {
       out.look = 1;
       out.lw = L(A.lw || 0, B.lw || 0);
       out.sc = lerpCol(A.sc, B.sc, t);
-      if ((A.fg && !B.fg) || (!A.fg && B.fg)) { out.fc = A.fc; out.fg = A.fg; }   // gradient <-> solid: hold
-      else { out.fc = lerpCol(A.fc, B.fc, t); out.fg = lerpStops(A.fg, B.fg, t); }
+      out.sg = A.sg;
+      if ((A.fg && !B.fg) || (!A.fg && B.fg)) {                 // gradient <-> solid: hold
+        out.fc = A.fc; out.fg = A.fg; out.fo = A.fo; out.fr = A.fr; out.go = A.go; out.gd = A.gd;
+      } else {
+        out.fc = lerpCol(A.fc, B.fc, t);
+        out.fg = lerpStops(A.fg, B.fg, t);
+        if (out.fg) {
+          out.fr = A.fr;
+          out.fo = (A.fo && B.fo && A.fo.length === B.fo.length) ? A.fo.map(function (v, i) { return L(v, B.fo[i]); }) : A.fo;
+          out.go = (A.go && B.go) ? [L(A.go[0], B.go[0]), L(A.go[1], B.go[1])] : A.go;
+          out.gd = (A.gd && B.gd) ? [L(A.gd[0], B.gd[0]), L(A.gd[1], B.gd[1])] : A.gd;
+        }
+      }
     } else if (A.look) {
-      out.look = 1; out.fc = A.fc; out.fg = A.fg; out.sc = A.sc; out.lw = A.lw;
+      out.look = 1; out.fc = A.fc; out.fg = A.fg; out.fo = A.fo; out.fr = A.fr; out.go = A.go; out.gd = A.gd;
+      out.sc = A.sc; out.sg = A.sg; out.lw = A.lw;
     }
-    return out;
   }
   function applyState(item, k) {
     var M = buildPose(k), done = false;
@@ -4735,6 +4766,13 @@ document.addEventListener('keydown', function (e) {
       if (cd(ev.fc, cu.fc) || cd(ev.sc, cu.sc) || Math.abs((ev.lw || 0) - (cu.lw || 0)) > 0.05) return true;
       if (ev.fg && cu.fg && ev.fg.some(function (c, i) { return cd(c, cu.fg[i]); })) return true;
     }
+    if (ev.look && cu.look && ev.go && cu.go && ev.gd && cu.gd) {
+      var gdiff = function (a, b) { return Math.abs(a[0] - b[0]) > 0.5 || Math.abs(a[1] - b[1]) > 0.5; };
+      if (gdiff(ev.go, cu.go) || gdiff(ev.gd, cu.gd)) return true;
+      if (ev.fo && cu.fo && ev.fo.length === cu.fo.length &&
+          ev.fo.some(function (v, i) { return Math.abs(v - cu.fo[i]) > 0.005; })) return true;
+    }
+
     if (cu.shape) {
       var es = ev.shape || shapeOf(it, ev);
       if (es && !sameShape(es, cu.shape, 0.5)) return true;
@@ -4892,7 +4930,9 @@ document.addEventListener('keydown', function (e) {
     applyFrame: applyFrame,
     stop: function () { setPlaying(false); },
     refresh: function () { applyFrame(curFrame); tlDirty = true; renderOnion(); },
-    commit: commit
+    commit: commit,
+    keyAt: function (f) { if (!selection.length) return; setKeys(keyTargets(), f); commit(); tlDirty = true; },
+    goto: function (f) { setFrame(f); }
   };
 
   syncInputs();
@@ -6122,6 +6162,188 @@ document.addEventListener('keydown', function (e) {
   ctrls.sprite = ctrls.sprite || function () {};
   presetBtns[0].classList.add('on');
   fx = Object.assign({}, DEF, PRE[0][1]);
+
+    // ===== Day 8: layer stack =====
+  var layers = [fx], act = 0, customVer = 0, cache = new WeakMap();
+
+  css.textContent += '.vlr{display:flex;gap:4px;margin-bottom:5px}.vlr .nm{flex:1;text-align:left;overflow:hidden;' +
+    'text-overflow:ellipsis;white-space:nowrap}.vlr button{padding:6px 8px}';
+
+  var _setCustom = setCustom;
+  setCustom = function () { customVer++; return _setCustom.apply(this, arguments); };
+
+  function keyOf(L) {
+    return JSON.stringify(L, function (k, v) { return (k === 'lname' || k === 'lhide') ? undefined : v; }) + '|' + customVer;
+  }
+  function prep(L) {
+    var key = keyOf(L), e = cache.get(L);
+    if (e && e.key === key) return e;
+    var sf = fx, sp = parts, sr = ramp;
+    fx = L; parts = build(); buildRamp();
+    e = { key: key, parts: parts, ramp: ramp };
+    fx = sf; parts = sp; ramp = sr;
+    cache.set(L, e);
+    return e;
+  }
+  function drawStack(c, t, w, h, o) {
+    layers[act] = fx;
+    c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+    c.clearRect(0, 0, w, h);
+    if (o.bg) { c.fillStyle = o.bg; c.fillRect(0, 0, w, h); }
+    var sf = fx, sp = parts, sr = ramp;
+    for (var i = 0; i < layers.length; i++) {
+      var L = layers[i];
+      if (L.lhide) continue;
+      var e = prep(L);
+      fx = L; parts = e.parts; ramp = e.ramp;
+      draw(c, t, w, h, { keep: true, guide: !!o.guide && L === sf });
+    }
+    fx = sf; parts = sp; ramp = sr;
+  }
+
+  // preview + export now render the whole stack
+  paintNow = function () {
+    drawStack(ctx, curT(), fx.w, fx.h, { bg: previewBg === 'checker' ? null : previewBg, guide: $('vp-guide').checked });
+    var f = curFrameIdx();
+    $('vp-scrub').value = f;
+    $('vp-flabel').textContent = 'Frame ' + f + ' / ' + (nFrames() - 1);
+  };
+  frameCanvas = function (i, bg) {
+    var c = document.createElement('canvas');
+    c.width = fx.w; c.height = fx.h;
+    drawStack(c.getContext('2d'), i * fx.duration / nFrames(), fx.w, fx.h, { bg: bg, guide: false });
+    return c;
+  };
+  curT = function () {
+    layers[act] = fx;
+    var D = fx.duration, anyBurst = layers.some(function (l) { return l.mode !== 'loop'; });
+    return time % (anyBurst ? D + 0.5 : D);
+  };
+
+  // duration / fps / size are shared by every layer
+  var _refresh = refresh;
+  refresh = function (k) {
+    layers[act] = fx;
+    if (k === 'duration' || k === 'fps') layers.forEach(function (l) { l.duration = fx.duration; l.fps = fx.fps; });
+    _refresh(k);
+  };
+  $('vx-size').addEventListener('change', function () { layers.forEach(function (l) { l.w = fx.w; l.h = fx.h; }); });
+
+  // loading a preset keeps the stack's duration / fps / size
+  presetBtns.forEach(function (b, i) {
+    b.addEventListener('click', function () {
+      if (layers.length > 1) {
+        var o = layers[act === 0 ? 1 : 0];
+        fx.duration = o.duration; fx.fps = o.fps; fx.w = o.w; fx.h = o.h;
+        syncAll();
+      }
+      fx.lname = PRE[i][0];
+      layers[act] = fx;
+      renderLayerList();
+    });
+  });
+
+  // ---------- layer list UI ----------
+  var lbox = document.createElement('div');
+  lbox.innerHTML =
+    '<div class="vsec" style="margin-top:2px">Layers (top of list = drawn on top)</div><div id="vl-list"></div>' +
+    '<div class="vr"><select id="vl-add"></select></div>' +
+    '<div class="vbtns" style="margin-top:4px"><button id="vl-dup">⧉ Duplicate layer</button>' +
+    '<button id="vl-save">💾 Save stack (.json)</button><button id="vl-open">📂 Open stack</button></div>' +
+    '<input type="file" id="vl-file" accept=".json,application/json" hidden>';
+  right.insertBefore(lbox, right.firstChild);
+
+  function layerName(L) {
+    return L.lname || ({ particles: 'Particles', lightning: 'Lightning', shockwave: 'Shockwave', slash: 'Slash' }[L.kind] || 'Layer');
+  }
+  function selectLayer(i) {
+    layers[act] = fx; act = i; fx = layers[i];
+    presetBtns.forEach(function (x) { x.classList.remove('on'); });
+    syncAll(); renderLayerList();
+  }
+  function renderLayerList() {
+    layers[act] = fx;
+    var list = $('vl-list');
+    list.innerHTML = '';
+    for (var i = layers.length - 1; i >= 0; i--) (function (i) {
+      var L = layers[i], row = document.createElement('div');
+      row.className = 'vlr';
+      row.innerHTML = '<button class="nm"></button><button class="eye"></button><button class="up" title="Move up">▲</button>' +
+        '<button class="dn" title="Move down">▼</button><button class="rm" title="Delete layer">✕</button>';
+      var nm = row.querySelector('.nm');
+      nm.textContent = (i + 1) + '. ' + layerName(L);
+      if (i === act) nm.classList.add('on');
+      row.querySelector('.eye').textContent = L.lhide ? '—' : '👁';
+      nm.addEventListener('click', function () { selectLayer(i); });
+      row.querySelector('.eye').addEventListener('click', function () { L.lhide = !L.lhide; renderLayerList(); paintNow(); });
+      function move(d) {
+        var j = i + d;
+        if (j < 0 || j >= layers.length) return;
+        layers[act] = fx;
+        var tmp = layers[i]; layers[i] = layers[j]; layers[j] = tmp;
+        act = layers.indexOf(fx);
+        renderLayerList(); paintNow();
+      }
+      row.querySelector('.up').addEventListener('click', function () { move(1); });
+      row.querySelector('.dn').addEventListener('click', function () { move(-1); });
+      row.querySelector('.rm').addEventListener('click', function () {
+        if (layers.length < 2) { say('Keep at least one layer'); return; }
+        layers[act] = fx;
+        layers.splice(i, 1);
+        if (i < act) act--; else if (i === act) act = Math.min(act, layers.length - 1);
+        fx = layers[act];
+        syncAll(); renderLayerList();
+      });
+      list.appendChild(row);
+    })(i);
+  }
+
+  var addSel = $('vl-add');
+  addSel.innerHTML = '<option value="">＋ Add layer from preset…</option>' +
+    PRE.map(function (p, i) { return '<option value="' + i + '">' + p[0] + '</option>'; }).join('');
+  addSel.addEventListener('change', function () {
+    if (addSel.value === '') return;
+    var p = PRE[Number(addSel.value)];
+    addSel.value = '';
+    layers[act] = fx;
+    var b0 = layers[0];
+    var L = Object.assign({}, DEF, p[1], { w: b0.w, h: b0.h, fps: b0.fps, duration: b0.duration, lname: p[0] });
+    layers.push(L); act = layers.length - 1; fx = L;
+    presetBtns.forEach(function (x) { x.classList.remove('on'); });
+    syncAll(); renderLayerList();
+  });
+  $('vl-dup').addEventListener('click', function () {
+    layers[act] = fx;
+    var L = JSON.parse(JSON.stringify(fx));
+    L.lname = layerName(fx) + ' copy';
+    L.seed = ((fx.seed || 1) * 7 + 13) % 9999 + 1;
+    layers.splice(act + 1, 0, L);
+    act++; fx = L;
+    syncAll(); renderLayerList();
+  });
+  $('vl-save').addEventListener('click', function () {
+    layers[act] = fx;
+    downloadBlob(new Blob([JSON.stringify({ vfxStack: 1, layers: layers }, null, 2)], { type: 'application/json' }), fname() + '-stack.json');
+  });
+  $('vl-open').addEventListener('click', function () { $('vl-file').click(); });
+  $('vl-file').addEventListener('change', function () {
+    var f = this.files[0]; this.value = '';
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      try {
+        var d = JSON.parse(rd.result);
+        if (!d.layers || !d.layers.length) throw new Error('bad');
+        layers = d.layers.map(function (l) { return Object.assign({}, DEF, l); });
+        act = 0; fx = layers[0]; time = 0;
+        presetBtns.forEach(function (x) { x.classList.remove('on'); });
+        syncAll(); renderLayerList();
+      } catch (err) { alert('This is not a VFX stack file.'); }
+    };
+    rd.readAsText(f);
+  });
+
+  renderLayerList();
 })();
 
 // ======================================================
@@ -7098,5 +7320,551 @@ window.MediaExport = (function () {
     box.style.left = clamp(r.left, 8, window.innerWidth - 270) + 'px';
     box.style.top = Math.max(8, r.top - box.offsetHeight - 8) + 'px';
     open = true; paint();
+  });
+})();
+
+// ======================================================
+// DAY 8-A: "MAKE WHOLE" BUTTON FOR ARCS
+// ======================================================
+(function () {
+  var st = document.createElement('style');
+  st.textContent =
+    '#ell-whole-btn{position:absolute;display:none;z-index:12;transform:translate(-50%,-50%);padding:7px 13px;' +
+    'background:#2f6fed;color:#fff;border:2px solid #fff;border-radius:18px;font:12px system-ui,sans-serif;cursor:pointer;' +
+    'box-shadow:0 2px 10px rgba(0,0,0,.5)}' +
+    '@media (pointer:coarse){#ell-whole-btn{padding:11px 17px;font-size:14px}}';
+  document.head.appendChild(st);
+
+  var b = document.createElement('button');
+  b.id = 'ell-whole-btn';
+  b.textContent = '◯ Make whole';
+  canvasArea.appendChild(b);
+  b.addEventListener('click', function () {
+    var real = document.getElementById('ell-whole');
+    if (real) real.click();
+  });
+
+  var prev = window.tickTimeline;
+  window.tickTimeline = function (e) {
+    if (prev) prev(e);
+    var p = (selection.length === 1 && currentToolName !== 'node') ? selection[0] : null;
+    var ell = p && p.className === 'Path' && p.data && p.data.ell;
+    if (!ell || ell.type === 'whole') { b.style.display = 'none'; return; }
+    var v = paper.view.projectToView(mxFrom(ell.M).transform(new paper.Point(0, 0)));
+    b.style.display = 'block';
+    b.style.left = v.x + 'px';
+    b.style.top = v.y + 'px';
+  };
+})();
+// ======================================================
+// DAY 8-B: MULTI-POINT SELECTION (Node tool)
+// ======================================================
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var say = function (m) { if (window.toast) window.toast(m); };
+
+  var css = document.createElement('style');
+  css.textContent =
+    '.pt-mark{position:absolute;display:none;z-index:9;pointer-events:none;width:14px;height:14px;border-radius:50%;' +
+    'background:#00e676;border:2px solid #fff;box-shadow:0 0 0 2px #00a152,0 0 8px 2px rgba(0,230,118,.8);transform:translate(-50%,-50%)}' +
+    '@media (pointer:coarse){.pt-mark{width:20px;height:20px}}';
+  document.head.appendChild(css);
+
+  var set = [], pool = [];
+  var mode = null, start = null, rect = null, base = [], moved = false, keepSel = false;
+  var ok = function (s) { return !!(s && s.path && s.path.parent); };
+  var toGlobal = function (s) { return s.path.localToGlobal ? s.path.localToGlobal(s.point) : s.point; };
+
+  function leafPaths(items, out) {
+    items.forEach(function (i) {
+      if (!i.visible) return;
+      if (i.className === 'Path') out.push(i);
+      else if (i.children && i.className !== 'Layer') leafPaths(i.children, out);
+    });
+    return out;
+  }
+  function candidates() {
+    var out = leafPaths(selection, []);
+    if (out.length) return out;
+    paper.project.layers.forEach(function (l) { if (l.visible) leafPaths(l.children, out); });
+    return out;
+  }
+  function showPaths() { leafPaths(selection, []).forEach(function (p) { p.fullySelected = true; }); }
+  function topsOf(segs) {
+    var tops = [];
+    segs.forEach(function (s) { var t = topLevelItem(s.path); if (tops.indexOf(t) < 0) tops.push(t); });
+    return tops;
+  }
+
+  // ---------- mouse ----------
+  var prevDown = tools.node.onMouseDown, prevDrag = tools.node.onMouseDrag, prevUp = tools.node.onMouseUp;
+
+  tools.node.onMouseDown = function (event) {
+    mode = null; moved = false; keepSel = false;
+    set = set.filter(ok);
+    var shift = !!event.modifiers.shift;
+    var add = (typeof addPointMode !== 'undefined') && addPointMode;
+    var hit = paper.project.hitTest(event.point, { segments: true, handles: true, fill: true, stroke: true, tolerance: 6 });
+
+    if (hit && hit.type === 'segment' && ok(hit.segment)) {
+      var seg = hit.segment;
+      if (shift) {
+        var i = set.indexOf(seg);
+        if (i >= 0) set.splice(i, 1); else set.push(seg);
+        nodeSel = set[set.length - 1] || null;
+        var top = topLevelItem(seg.path);
+        if (selection.indexOf(top) < 0) setSelection(selection.concat(top));
+        showPaths();
+        mode = 'none';
+        return;
+      }
+      var wasIn = set.indexOf(seg) >= 0;
+      prevDown(event);
+      if (!wasIn) set = [seg];
+      nodeSel = ok(seg) ? seg : null;
+      mode = (wasIn && set.length > 1) ? 'group' : 'single';
+      return;
+    }
+
+    var insideSelected = hit && hit.type === 'fill' && selection.indexOf(topLevelItem(hit.item)) >= 0;
+    if ((hit && !insideSelected) || add) {                 // old behaviour: handles, curves, add-point mode
+      var onHandle = hit && (hit.type === 'handle-in' || hit.type === 'handle-out');
+      if (!onHandle && !shift) set = [];
+      prevDown(event);
+      if (!set.length && ok(nodeSel)) set = [nodeSel];
+      mode = 'single';
+      return;
+    }
+
+    mode = 'marquee';                                       // empty space (or inside an already selected shape)
+    keepSel = !!insideSelected;
+    start = event.point; rect = null;
+    base = shift ? set.slice() : [];
+    if (!shift) set = [];
+  };
+
+  tools.node.onMouseDrag = function (event) {
+    if (mode === 'marquee') {
+      var z = paper.view.zoom;
+      if (!rect && event.point.getDistance(start) * z < 5) return;
+      if (rect) rect.remove();
+      rect = new paper.Path.Rectangle({
+        from: start, to: event.point, strokeColor: '#00e676', strokeWidth: 1 / z, dashArray: [4 / z, 4 / z],
+        fillColor: new paper.Color(0, 0.9, 0.46, 0.12)
+      });
+      return;
+    }
+    if (mode === 'none') return;
+    if (mode === 'group') {
+      set.forEach(function (s) { if (ok(s)) s.point = s.point.add(event.delta); });
+      nodeMoved = true; moved = true;
+      return;
+    }
+    prevDrag(event);
+  };
+
+  tools.node.onMouseUp = function (event) {
+    if (mode === 'marquee') {
+      var box = null;
+      if (rect) { box = rect.bounds; rect.remove(); rect = null; }
+      if (!box) {                                           // just a tap
+        if (!event.modifiers.shift) {
+          set = [];
+          if (!keepSel) { nodeSel = null; clearSelection(); }
+        }
+      } else {
+        var found = [];
+        candidates().forEach(function (p) {
+          p.segments.forEach(function (s) {
+            if (box.contains(toGlobal(s)) && base.indexOf(s) < 0 && found.indexOf(s) < 0) found.push(s);
+          });
+        });
+        set = base.concat(found).filter(ok);
+        if (set.length) {
+          setSelection(topsOf(set));
+          showPaths();
+          nodeSel = set[set.length - 1];
+        }
+        say(set.length + ' point(s) selected');
+      }
+      mode = null;
+      return;
+    }
+    if (mode === 'none') { mode = null; return; }
+    if (mode === 'group' && moved) {
+      set.forEach(function (s) { if (ok(s)) clearRound(s.path); });
+      nodeMoved = true;
+    }
+    prevUp(event);
+    mode = null;
+  };
+
+  // ---------- actions ----------
+  function deletePoints() {
+    set = set.filter(ok);
+    if (!set.length && ok(nodeSel)) set = [nodeSel];
+    if (!set.length) { say('Select points first (drag a box with the Node tool)'); return; }
+    var paths = [], n = 0, skipped = 0;
+    set.forEach(function (s) { if (paths.indexOf(s.path) < 0) paths.push(s.path); });
+    paths.forEach(function (p) {
+      var mine = set.filter(function (s) { return s.path === p; });
+      if (p.segments.length - mine.length < 2) { skipped += mine.length; return; }
+      clearRound(p);
+      mine.forEach(function (s) { s.remove(); n++; });
+      p.fullySelected = true;
+    });
+    set = []; nodeSel = null;
+    if (n) saveState();
+    say(n + ' point(s) deleted' + (skipped ? ', ' + skipped + ' kept (a path needs 2 points)' : ''));
+  }
+  function toggleSmooth() {
+    var s = set.filter(ok);
+    if (!s.length && ok(nodeSel)) s = [nodeSel];
+    if (!s.length) { say('Select points first'); return; }
+    var allCorner = s.every(function (g) { return g.handleIn.isZero() && g.handleOut.isZero(); });
+    s.forEach(function (g) {
+      clearRound(g.path);
+      if (allCorner) g.smooth();
+      else { g.handleIn = new paper.Point(0, 0); g.handleOut = new paper.Point(0, 0); }
+    });
+    saveState();
+  }
+  function alignPts(axis) {
+    var s = set.filter(ok);
+    if (s.length < 2) { say('Select 2 or more points'); return; }
+    var sum = 0;
+    s.forEach(function (g) { sum += g.point[axis]; });
+    var avg = sum / s.length;
+    s.forEach(function (g) {
+      clearRound(g.path);
+      g.point = axis === 'x' ? new paper.Point(avg, g.point.y) : new paper.Point(g.point.x, avg);
+    });
+    saveState();
+  }
+  function selectAllPts() {
+    if (currentToolName !== 'node') { var keep = selection.slice(); setTool('node'); setSelection(keep); }
+    var paths = candidates(), arr = [];
+    paths.forEach(function (p) { p.segments.forEach(function (s) { arr.push(s); }); });
+    set = arr; nodeSel = arr[arr.length - 1] || null;
+    if (arr.length) { setSelection(topsOf(arr)); showPaths(); }
+    say(arr.length + ' point(s) selected');
+  }
+
+  // replace the old single-point buttons (cloning removes their old click handlers)
+  ['node-del', 'node-type'].forEach(function (id) {
+    var b = $(id);
+    if (b) b.parentNode.replaceChild(b.cloneNode(true), b);
+  });
+  $('node-del').addEventListener('click', deletePoints);
+  $('node-type').addEventListener('click', toggleSmooth);
+  $('node-type').parentNode.insertAdjacentHTML('afterend',
+    '<div class="layer-actions"><button id="np-all">Select all points</button><button id="np-none">Select none</button></div>' +
+    '<div class="layer-actions"><button id="np-ax" title="Put the selected points on the same X (vertical line)">Same X</button>' +
+    '<button id="np-ay" title="Put the selected points on the same Y (horizontal line)">Same Y</button></div>' +
+    '<p class="hint">Node tool (N): drag a box on empty space to select many points. Shift+tap (or the ⇧ button) adds or removes one. ' +
+    'Drag a selected point to move them all. Delete removes them. Arrow keys move them (Shift = 10×).</p>');
+  $('np-all').addEventListener('click', selectAllPts);
+  $('np-none').addEventListener('click', function () { set = []; nodeSel = null; });
+  $('np-ax').addEventListener('click', function () { alignPts('x'); });
+  $('np-ay').addEventListener('click', function () { alignPts('y'); });
+
+  // ---------- keyboard (runs before the old handlers) ----------
+  var nt = null;
+  window.addEventListener('keydown', function (e) {
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (currentToolName !== 'node') return;
+    set = set.filter(ok);
+    if (!set.length) return;
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault(); e.stopImmediatePropagation(); deletePoints(); return;
+    }
+    if (e.key.indexOf('Arrow') === 0 && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      var s = (typeof nudgeStep === 'function' ? nudgeStep() : 1) * (e.shiftKey ? 10 : 1);
+      var dx = e.key === 'ArrowLeft' ? -s : e.key === 'ArrowRight' ? s : 0;
+      var dy = e.key === 'ArrowUp' ? -s : e.key === 'ArrowDown' ? s : 0;
+      set.forEach(function (g) { g.point = g.point.add(new paper.Point(dx, dy)); });
+      clearTimeout(nt);
+      nt = setTimeout(function () {
+        set.forEach(function (g) { if (ok(g)) clearRound(g.path); });
+        saveState();
+      }, 400);
+    }
+  }, true);
+
+  // ---------- green markers ----------
+  var prevTick = window.tickTimeline;
+  window.tickTimeline = function (e) {
+    if (prevTick) prevTick(e);
+    if (currentToolName !== 'node') set = [];
+    set = set.filter(ok);
+    var n = Math.min(set.length, 400);
+    while (pool.length < n) {
+      var d = document.createElement('div');
+      d.className = 'pt-mark';
+      canvasArea.appendChild(d);
+      pool.push(d);
+    }
+    for (var i = 0; i < pool.length; i++) {
+      var m = pool[i];
+      if (i >= n) { if (m.style.display !== 'none') m.style.display = 'none'; continue; }
+      var v = paper.view.projectToView(toGlobal(set[i]));
+      m.style.display = 'block';
+      m.style.left = v.x + 'px';
+      m.style.top = v.y + 'px';
+    }
+  };
+})();
+
+// ======================================================
+// DAY 8-C: GRADIENT SWEEP BUTTON
+// ======================================================
+(function () {
+  var gp = document.getElementById('gp');
+  if (!gp) return;
+  var say = function (m) { if (window.toast) window.toast(m); };
+  gp.insertAdjacentHTML('beforebegin',
+    '<div class="layer-actions"><button id="g-sweep" title="Slides the gradient across the shape over the whole animation">▶ Animate sweep</button></div>');
+  document.getElementById('g-sweep').addEventListener('click', function () {
+    var A = window.animApi;
+    if (!A || !A.keyAt) { alert('Do step C0 first (the new animApi block).'); return; }
+    if (!selection.length) { alert('Select a shape with a gradient fill first.'); return; }
+    var leaves = [];
+    (function walk(i) { if (i.className === 'Group') i.children.forEach(walk); else leaves.push(i); })(selection[0]);
+    var gl = leaves.filter(function (l) {
+      var f = l.fillColor; return f && f.type === 'gradient' && f.origin && f.destination;
+    });
+    if (!gl.length) { alert('The fill must be a linear or radial gradient.'); return; }
+    var last = A.anim.length - 1;
+    if (last < 1) { alert('Set the animation Length to at least 2 frames.'); return; }
+    var saved = gl.map(function (l) { return [l.fillColor.origin.clone(), l.fillColor.destination.clone()]; });
+    function shift(k) {
+      gl.forEach(function (l, i) {
+        var o = saved[i][0], d = saved[i][1], v = d.subtract(o);
+        l.fillColor.origin = o.add(v.multiply(k));
+        l.fillColor.destination = d.add(v.multiply(k));
+      });
+    }
+    A.stop();
+    shift(-1); A.keyAt(0);
+    shift(1);  A.keyAt(last);
+    A.goto(0);
+    say('Gradient sweep keyed: frames 0 to ' + last);
+  });
+})();
+
+// ======================================================
+// DAY 8-E: LOTTIE EXPORT
+// ======================================================
+(function () {
+  var pane = document.querySelector('.tab-pane[data-pane="export"]');
+  if (!pane) return;
+  var say = function (m) { if (window.toast) window.toast(m); };
+  var $ = function (id) { return document.getElementById(id); };
+  var r3 = function (v) { return Math.round(v * 1000) / 1000; };
+
+  pane.insertAdjacentHTML('beforeend',
+    '<h3 class="section-title">Lottie (animation JSON)</h3>' +
+    '<label class="prop-row">File name <input type="text" id="lt-name" value="animation" style="width:100px"></label>' +
+    '<div class="layer-actions"><button id="lt-export">⬇ Lottie .json</button><button id="lt-preview">▶ Preview</button></div>' +
+    '<p class="hint">Exports the orange frame area as a Lottie animation. Paths, fills, strokes, position / rotation / scale / opacity keys, ' +
+    'shape morphs, color keys and switch groups are exported. Text, images, blur, dashes, skew and gradient animation are not.</p>');
+
+  function rgba(c) {
+    if (!c || c.type === 'gradient') return null;
+    var x = c.type === 'rgb' ? c : c.convert('rgb');
+    return [r3(x.red), r3(x.green), r3(x.blue), x.alpha == null ? 1 : r3(x.alpha)];
+  }
+  var col = function (a) { return [r3(a[0]), r3(a[1]), r3(a[2]), 1]; };
+  var alpha = function (a) { return r3((a[3] == null ? 1 : a[3]) * 100); };
+
+  var NAMED = { linear: [0, 0, 1, 1], smooth: [0.333, 0, 0.667, 1], 'in': [0.333, 0, 0.667, 0.333],
+                out: [0.333, 0.667, 0.667, 1], bounce: [0.34, 1.56, 0.64, 1] };
+  function easeOf(e) {
+    if (e === 'step') return null;
+    if (typeof e === 'string' && e.indexOf('bez:') === 0) return e.slice(4).split(',').map(Number);
+    return NAMED[e] || NAMED.smooth;
+  }
+  function easeProps(o, q, multi) {
+    if (!q) { o.h = 1; return; }
+    o.o = multi ? { x: q[0], y: q[1] } : { x: [q[0]], y: [q[1]] };
+    o.i = multi ? { x: q[2], y: q[3] } : { x: [q[2]], y: [q[3]] };
+  }
+  function prop(frames, ks, get, multi) {
+    if (frames.length < 2) return { a: 0, k: get(ks[frames[0]]) };
+    return { a: 1, k: frames.map(function (f, idx) {
+      var v = get(ks[f]), o = { t: f, s: multi ? v : [v] };
+      if (idx < frames.length - 1) easeProps(o, easeOf(ks[f].e), multi);
+      return o;
+    }) };
+  }
+
+  function arrShape(arr, closed) {
+    var v = [], i = [], o = [];
+    arr.forEach(function (s) {
+      v.push([r3(s[0]), r3(s[1])]); i.push([r3(s[2]), r3(s[3])]); o.push([r3(s[4]), r3(s[5])]);
+    });
+    return { i: i, o: o, v: v, c: !!closed };
+  }
+  function segShape(path, M) {
+    var m0 = M ? new paper.Matrix(M.a, M.b, M.c, M.d, 0, 0) : null;
+    return arrShape(path.segments.map(function (s) {
+      var p = M ? M.transform(s.point) : s.point;
+      var hi = m0 ? m0.transform(s.handleIn) : s.handleIn, ho = m0 ? m0.transform(s.handleOut) : s.handleOut;
+      return [p.x, p.y, hi.x, hi.y, ho.x, ho.y];
+    }), path.closed);
+  }
+  function morphProp(frames, ks, rest, pi, closed) {
+    var at = function (f) { var k = ks[f]; return arrShape((k.shape && k.shape[pi]) ? k.shape[pi] : rest, closed); };
+    if (frames.length < 2) return { a: 0, k: at(frames[0]) };
+    return { a: 1, k: frames.map(function (f, idx) {
+      var o = { t: f, s: [at(f)] };
+      if (idx < frames.length - 1) easeProps(o, easeOf(ks[f].e), false);
+      return o;
+    }) };
+  }
+  function gradFill(f, inv) {
+    var stops = f.gradient.stops, n = stops.length, flat = [], al = [], hasA = false;
+    stops.forEach(function (st, i) {
+      var c = rgba(st.color), off = st.offset == null ? i / Math.max(1, n - 1) : st.offset;
+      flat.push(r3(off), c[0], c[1], c[2]);
+      al.push(r3(off), c[3]);
+      if (c[3] < 0.999) hasA = true;
+    });
+    var o = f.origin, e = f.destination;
+    if (inv) { o = inv.transform(o); e = inv.transform(e); }
+    return { ty: 'gf', nm: 'Gradient', o: { a: 0, k: 100 }, r: 1, bm: 0,
+      g: { p: n, k: { a: 0, k: flat.concat(hasA ? al : []) } },
+      s: { a: 0, k: [r3(o.x), r3(o.y)] }, e: { a: 0, k: [r3(e.x), r3(e.y)] }, t: f.gradient.radial ? 2 : 1 };
+  }
+
+  function layerOf(item, ind, len) {
+    var d = item.data || {}, ks = d.keys;
+    var frames = ks ? Object.keys(ks).map(Number).sort(function (a, b) { return a - b; }) : [];
+    var inv = frames.length ? mxFrom(d.pose).inverted() : null;
+    var keyed = frames.length > 0 && !!inv;
+    if (!keyed) frames = [];
+    var hasAll = function (name) {
+      return keyed && frames.every(function (x) { return ks[x].look && ks[x][name]; });
+    };
+
+    var paths = item.className === 'CompoundPath' ? item.children.slice() : [item], its = [];
+    paths.forEach(function (p, pi) {
+      var shape;
+      if (keyed && d.morph && d.rest && d.rest[pi]) shape = morphProp(frames, ks, d.rest[pi], pi, p.closed);
+      else shape = { a: 0, k: segShape(p, keyed ? inv : null) };
+      its.push({ ty: 'sh', nm: 'Path ' + (pi + 1), ks: shape, hd: false });
+    });
+
+    var f = item.fillColor, s = item.strokeColor, sw = item.strokeWidth || 0, stroke = null, fill = null;
+    if (s && sw > 0) {
+      var sc = s.type === 'gradient' ? rgba(s.gradient.stops[0].color) : rgba(s);
+      var animC = s.type !== 'gradient' && hasAll('sc');
+      stroke = { ty: 'st', nm: 'Stroke',
+        c: animC ? prop(frames, ks, function (k) { return col(k.sc); }, true) : { a: 0, k: [sc[0], sc[1], sc[2], 1] },
+        o: animC ? prop(frames, ks, function (k) { return alpha(k.sc); }, false) : { a: 0, k: r3(sc[3] * 100) },
+        w: (keyed && frames.length > 1 && hasAll('lw') !== null && frames.every(function (x) { return ks[x].look; }))
+          ? prop(frames, ks, function (k) { return r3(k.lw || 0); }, false) : { a: 0, k: r3(sw) },
+        lc: { butt: 1, round: 2, square: 3 }[item.strokeCap] || 1,
+        lj: { miter: 1, round: 2, bevel: 3 }[item.strokeJoin] || 1, ml: 4, bm: 0 };
+    }
+    if (f) {
+      if (f.type === 'gradient') fill = gradFill(f, keyed ? inv : null);
+      else {
+        var c0 = rgba(f), af = hasAll('fc');
+        fill = { ty: 'fl', nm: 'Fill',
+          c: af ? prop(frames, ks, function (k) { return col(k.fc); }, true) : { a: 0, k: [c0[0], c0[1], c0[2], 1] },
+          o: af ? prop(frames, ks, function (k) { return alpha(k.fc); }, false) : { a: 0, k: r3(c0[3] * 100) },
+          r: item.fillRule === 'evenodd' ? 2 : 1, bm: 0 };
+      }
+    }
+    var group = { ty: 'gr', nm: 'Shape', bm: 0, it: its.concat(stroke ? [stroke] : [], fill ? [fill] : [], [{
+      ty: 'tr', p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0] }, s: { a: 0, k: [100, 100] },
+      r: { a: 0, k: 0 }, o: { a: 0, k: 100 }, sk: { a: 0, k: 0 }, sa: { a: 0, k: 0 } }]) };
+
+    var offX = -frame.x, offY = -frame.y, ks2;
+    if (keyed) {
+      var op;
+      if (d.swGroup) {
+        op = prop(frames, ks, function (k) { return k.sw === d.swIdx ? 100 : 0; }, false);
+        if (op.a === 1) op.k.forEach(function (kf) { kf.h = 1; delete kf.o; delete kf.i; });
+      } else {
+        op = prop(frames, ks, function (k) { return r3((k.o == null ? 1 : k.o) * 100); }, false);
+      }
+      ks2 = {
+        a: prop(frames, ks, function (k) { return [r3(k.qx), r3(k.qy), 0]; }, true),
+        p: prop(frames, ks, function (k) { return [r3(k.x + offX), r3(k.y + offY), 0]; }, true),
+        s: prop(frames, ks, function (k) { return [r3(k.sx * 100), r3(k.sy * 100), 100]; }, true),
+        r: prop(frames, ks, function (k) { return r3(k.r); }, false),
+        o: op
+      };
+    } else {
+      ks2 = { a: { a: 0, k: [0, 0, 0] }, p: { a: 0, k: [offX, offY, 0] }, s: { a: 0, k: [100, 100, 100] },
+              r: { a: 0, k: 0 }, o: { a: 0, k: r3((item.visible ? item.opacity : 0) * 100) } };
+    }
+    return { ddd: 0, ind: ind, ty: 4, nm: item.name || ('Shape ' + ind), sr: 1, ks: ks2, ao: 0,
+             shapes: [group], ip: 0, op: len, st: 0, bm: 0 };
+  }
+
+  function build() {
+    var A = window.animApi;
+    if (!A) { alert('Do step C0 first (the new animApi block).'); return null; }
+    var len = A.anim.length, fps = A.anim.fps, skipped = 0, flat = [];
+    function flatten(it) {
+      if (!it.visible && !(it.data && it.data.swGroup && it.data.keys)) return;
+      if (it.className === 'Group') it.children.forEach(flatten);
+      else if (it.className === 'Path' || it.className === 'CompoundPath') flat.push(it);
+      else skipped++;
+    }
+    paper.project.layers.forEach(function (L) { if (L.visible) L.children.forEach(flatten); });
+    if (!flat.length) { alert('Nothing to export.'); return null; }
+    var layers = flat.slice().reverse().map(function (it, i) { return layerOf(it, i + 1, len); });
+    var name = ($('lt-name').value || 'animation').replace(/[^\w\-]+/g, '_');
+    return { skipped: skipped, name: name, data: {
+      v: '5.7.0', fr: fps, ip: 0, op: len, w: Math.round(frame.w), h: Math.round(frame.h),
+      nm: name, ddd: 0, assets: [], layers: layers } };
+  }
+
+  $('lt-export').addEventListener('click', function () {
+    var r = build();
+    if (!r) return;
+    downloadBlob(new Blob([JSON.stringify(r.data)], { type: 'application/json' }), r.name + '.json');
+    say('Lottie saved: ' + r.data.layers.length + ' layers' + (r.skipped ? ', ' + r.skipped + ' text/image skipped' : ''));
+  });
+
+  // ---------- preview ----------
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:96000;display:none;flex-direction:column;align-items:center;' +
+    'justify-content:center;background:rgba(0,0,0,.85);gap:10px';
+  overlay.innerHTML = '<div id="lt-box" style="background:#222;border:1px solid #555"></div>' +
+    '<button id="lt-close" style="padding:9px 18px;background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:6px;font-size:14px">✕ Close preview</button>';
+  document.body.appendChild(overlay);
+  var player = null;
+  function loadLib() {
+    if (window.lottie) return Promise.resolve();
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js';
+      s.onload = res;
+      s.onerror = function () { rej(new Error('Could not load the Lottie player (offline?)')); };
+      document.head.appendChild(s);
+    });
+  }
+  function closePrev() {
+    if (player) { player.destroy(); player = null; }
+    overlay.style.display = 'none';
+  }
+  $('lt-close').addEventListener('click', closePrev);
+  $('lt-preview').addEventListener('click', function () {
+    var r = build();
+    if (!r) return;
+    loadLib().then(function () {
+      var box = $('lt-box'), w = Math.min(window.innerWidth * 0.9, 640), h = w * r.data.h / r.data.w;
+      if (h > window.innerHeight * 0.75) { h = window.innerHeight * 0.75; w = h * r.data.w / r.data.h; }
+      box.style.width = w + 'px'; box.style.height = h + 'px'; box.innerHTML = '';
+      overlay.style.display = 'flex';
+      player = window.lottie.loadAnimation({ container: box, renderer: 'svg', loop: true, autoplay: true, animationData: r.data });
+    }).catch(function (err) { alert(err.message); });
   });
 })();
