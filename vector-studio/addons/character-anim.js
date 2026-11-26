@@ -1,5 +1,8 @@
-// addons/character-anim.js
-// Character animation: bones (hierarchy), per-channel keys, dope sheet, graph editor, clips, pose library.
+// addons/character-anim.js  (v2 - easier animating, tablet + laptop)
+// Bones (hierarchy), per-channel keys, dope sheet, graph editor, clips, pose library,
+// NEW: auto key ON by default, floating transport bar, keyboard shortcuts,
+//      one-tap Quick Motion (swing / bob / sway / pulse / fade) with follow-through,
+//      ease-all-keys, copy / paste keys.
 (function () {
   'use strict';
   if (window.__addon_charanim) return;
@@ -9,16 +12,17 @@
   var say = function (m) { if (window.toast) window.toast(m); };
   var clamp = function (x, a, b) { return Math.min(b, Math.max(a, x)); };
   var r2 = function (v) { return Math.round(v * 100) / 100; };
+  var r3 = function (v) { return Math.round(v * 1000) / 1000; };
 
   var CH = ['rot', 'tx', 'ty', 'sx', 'sy', 'op'];
   var CHN = { rot: 'Rotation', tx: 'Move X', ty: 'Move Y', sx: 'Scale X', sy: 'Scale Y', op: 'Opacity' };
-  var DEFV = { rot: 0, tx: 0, ty: 0, sx: 1, sy: 1, op: 1 };
   var uid = function () { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); };
 
   var S = {
     clips: [{ id: 'c1', name: 'Idle', length: 24, fps: 12, loop: true }], clip: 'c1',
-    frame: 0, playing: false, acc: 0, auto: false, ease: 'smooth', mode: 'pose', tool: 'rot',
-    view: 'classic', gch: 'rot', sel: [], gsel: null, poses: [], clipboard: null, dirty: true
+    frame: 0, playing: false, acc: 0, auto: true, ease: 'smooth', mode: 'pose', tool: 'rot',
+    view: 'classic', gch: 'rot', sel: [], gsel: null, poses: [], clipboard: null, keyclip: null,
+    tabOn: false, dirty: true
   };
   var V = { cell: 14, sx: 0, sy: 0, W: 0, H: 0, dpr: 1, rows: [], range: null };
   var WORLD = {};
@@ -186,7 +190,7 @@
     delete it.data.rig; delete it.data.acts;
   }
   function enterRest() {
-    S.playing = false;
+    S.playing = false; setPlayLabel();
     resetAll();
     boneList().forEach(function (it) { it.data.rig.ap = [1, 0, 0, 1, 0, 0]; });
     S.mode = 'rest';
@@ -209,7 +213,7 @@
   css.textContent =
     '#ra-switch{display:flex;gap:4px;margin-bottom:4px;flex-shrink:0}' +
     '#ra-switch button,#ra-bar button{padding:5px 9px;font-size:12px;background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:4px;cursor:pointer}' +
-    '#ra-switch button.on,#ra-bar button.on,.ra-seg button.on{background:#2f6fed;border-color:#2f6fed;color:#fff}' +
+    '#ra-switch button.on,#ra-bar button.on,.ra-seg button.on,#rf-auto.on{background:#2f6fed;border-color:#2f6fed;color:#fff}' +
     '#ra-wrap{display:none;flex:1;min-height:0;flex-direction:column}' +
     '#ra-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;font-size:12px;color:#aaa}' +
     '#ra-bar input[type=number],#ra-bar select{padding:3px;background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:4px}' +
@@ -218,7 +222,11 @@
     '#ra-cv{position:absolute;left:0;top:0;width:100%;height:100%;touch-action:none}' +
     '.ra-seg{display:flex;gap:4px;margin-bottom:8px}.ra-seg button{flex:1;padding:7px 2px;background:#3a3a3a;color:#ddd;border:1px solid #555;border-radius:4px;cursor:pointer;font-size:12px}' +
     '#ra-bones{list-style:none;margin:0 0 8px}#ra-bones li{cursor:pointer;display:flex;gap:6px}' +
-    '@media (pointer:coarse){#ra-switch button,#ra-bar button{padding:9px 12px}}';
+    '#ra-float{display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--timeline-h,240px) + 14px);z-index:60;gap:6px;align-items:center;padding:6px 8px;background:rgba(30,30,30,.92);border:1px solid #555;border-radius:30px;box-shadow:0 2px 10px rgba(0,0,0,.5)}' +
+    '#ra-float button{min-width:40px;height:36px;padding:0 10px;font-size:14px;background:#3a3a3a;color:#eee;border:1px solid #555;border-radius:18px;cursor:pointer}' +
+    '#ra-float button.on{background:#2f6fed;border-color:#2f6fed}' +
+    '#ra-float span{color:#ff9f1c;font-size:12px;min-width:44px;text-align:center}' +
+    '@media (pointer:coarse){#ra-switch button,#ra-bar button{padding:9px 12px}#ra-float button{min-width:48px;height:44px}}';
   document.head.appendChild(css);
 
   var tabBtn = document.createElement('button');
@@ -239,16 +247,24 @@
     '<div class="layer-actions"><button id="ra-mode">✎ Edit rest pose</button></div>' +
     '<p class="hint" id="ra-hint">Build parents with Arrange → Rig → Set parent (child first, then click the parent).</p>' +
     '<ul id="ra-bones"></ul>' +
+    '<h3 class="section-title">Quick motion (1 tap animation)</h3>' +
+    '<label class="prop-row">Motion <select id="ra-qm"><option value="swing">Swing (rotate)</option><option value="bob">Bob (up / down)</option><option value="sway">Sway (left / right)</option><option value="pulse">Pulse / breathe (scale)</option><option value="fade">Fade</option></select></label>' +
+    '<label class="prop-row">Amount <input type="number" id="ra-qm-amt" value="15"></label>' +
+    '<label class="prop-row">Children follow late <input type="checkbox" id="ra-qm-chain" checked></label>' +
+    '<label class="prop-row">Delay per level (frames) <input type="number" id="ra-qm-delay" value="2" min="0" max="30"></label>' +
+    '<div class="layer-actions"><button id="ra-qm-go">⚡ Apply motion to selected</button></div>' +
+    '<p class="hint">Select a rigged part, press Apply. It makes a looping animation for the whole clip. Children lag behind the parent, so it looks natural (tail, arm, hair).</p>' +
     '<h3 class="section-title">Pose</h3>' +
     '<div class="layer-actions"><button id="ra-tool-btn">🦴 Pose tool (M)</button></div>' +
     '<div class="ra-seg" id="ra-seg"><button data-t="rot" class="on">⟳ Rotate</button><button data-t="move">✥ Move</button><button data-t="scale">⤢ Scale</button></div>' +
     CH.map(function (ch) {
       return '<label class="prop-row">' + CHN[ch] + ' <input type="number" id="ra-f-' + ch + '" step="' + (ch === 'rot' ? 1 : (ch === 'tx' || ch === 'ty') ? 1 : 0.05) + '"></label>';
     }).join('') +
-    '<label class="prop-row">Auto key <input type="checkbox" id="ra-auto"></label>' +
+    '<label class="prop-row">Auto key <input type="checkbox" id="ra-auto" checked></label>' +
     '<label class="prop-row">New key easing <select id="ra-ease"><option value="smooth">Smooth</option><option value="linear">Linear</option><option value="step">Step</option><option value="in">Ease in</option><option value="out">Ease out</option></select></label>' +
     '<div class="layer-actions"><button id="ra-key-all">◆ Key bone</button><button id="ra-key-rot">Rot</button><button id="ra-key-loc">Loc</button><button id="ra-key-scl">Scale</button><button id="ra-key-op">Op</button></div>' +
     '<div class="layer-actions"><button id="ra-key-allb">◆ Key ALL bones</button><button id="ra-unkey">Delete key (frame)</button></div>' +
+    '<div class="layer-actions"><button id="ra-ease-all">Apply easing to ALL keys of bone</button></div>' +
     '<div class="layer-actions"><button id="ra-reset">Reset bone</button><button id="ra-reset-all">Reset all</button></div>' +
     '<h3 class="section-title">Pose library</h3>' +
     '<div class="layer-actions"><button id="ra-pose-save">Save pose</button><button id="ra-pose-copy">Copy</button><button id="ra-pose-paste">Paste</button><button id="ra-pose-flip">Paste flipped</button></div>' +
@@ -260,16 +276,23 @@
     '<label class="prop-row">Columns <input type="number" id="ra-ex-cols" value="8" min="1" max="64"></label>' +
     '<div class="layer-actions"><button id="ra-ex-sheet">⬇ Sprite sheet</button><button id="ra-ex-gif">⬇ GIF</button></div>' +
     '<div class="layer-actions"><button id="ra-ex-json">⬇ Rig + all clips (JSON)</button></div>' +
-    '<p class="hint">Exports the orange frame area. Background follows the Export tab. Classic Auto key (timeline) should stay OFF for rigged bones.</p>';
+    '<p class="hint">Exports the orange frame area. Background follows the Export tab. Classic Auto key (timeline) should stay OFF for rigged bones.</p>' +
+    '<p class="hint"><b>Shortcuts</b> (when Anim tab is open): Space play · ← → frame · ↑ ↓ jump key · K key bone · Shift+K key all · Ctrl+C / Ctrl+V copy / paste keys (over the dope sheet) · Delete remove keys · M pose tool.</p>';
   tabBody.appendChild(pane);
 
+  var tabs = document.querySelectorAll('.tab-btn');
   tabBtn.addEventListener('click', function () {
     document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.toggle('active', b === tabBtn); });
     document.querySelectorAll('.tab-pane').forEach(function (p) { p.classList.toggle('active', p === pane); });
-    refreshAll();
+    S.tabOn = true;
+    if (S.view === 'classic') setView('dope');   // open the dope sheet automatically
+    refreshAll(); updateFloat();
   });
-  document.querySelectorAll('.tab-btn').forEach(function (b) {
-    if (b !== tabBtn) b.addEventListener('click', function () { tabBtn.classList.remove('active'); pane.classList.remove('active'); });
+  tabs.forEach(function (b) {
+    if (b !== tabBtn) b.addEventListener('click', function () {
+      tabBtn.classList.remove('active'); pane.classList.remove('active');
+      S.tabOn = false; updateFloat();
+    });
   });
 
   // ---------------- UI: bottom panel (dope sheet / graph) ----------------
@@ -285,6 +308,7 @@
     '<label>Frame <input type="number" id="ra-frame" value="0" min="0"></label>' +
     '<button id="ra-pk">◀ Key</button><button id="ra-nk">Key ▶</button>' +
     '<label>Interp <select id="ra-interp"><option value="smooth">Smooth</option><option value="linear">Linear</option><option value="step">Step</option><option value="in">Ease in</option><option value="out">Ease out</option><option value="bez">Bezier</option></select></label>' +
+    '<button id="ra-copykeys">Copy keys</button><button id="ra-pastekeys">Paste keys</button>' +
     '<button id="ra-delkeys">Delete keys</button>' +
     '<label id="ra-gch-l">Channel <select id="ra-gch">' + CH.map(function (c) { return '<option value="' + c + '">' + CHN[c] + '</option>'; }).join('') + '</select></label>' +
     '<button id="ra-zin">🔍＋</button><button id="ra-zout">🔍−</button><span id="ra-status" style="color:#ff9f1c"></span></div>' +
@@ -294,6 +318,20 @@
   var hover = false;
   hold.addEventListener('pointerenter', function () { hover = true; });
   hold.addEventListener('pointerleave', function () { hover = false; });
+
+  // floating transport bar (easy on tablet: big buttons over the canvas)
+  var fl = document.createElement('div');
+  fl.id = 'ra-float';
+  fl.innerHTML = '<button id="rf-prev">◀</button><button id="rf-play">▶</button><button id="rf-next">▶</button>' +
+    '<span id="rf-fr">0</span><button id="rf-key">◆ Key</button><button id="rf-auto" class="on">Auto</button>';
+  document.body.appendChild(fl);
+  function updateFloat() { fl.style.display = (S.tabOn || S.view !== 'classic') ? 'flex' : 'none'; }
+  function setPlayLabel() {
+    var t = S.playing ? '⏸ Pause' : '▶ Play';
+    var a = $('ra-play'), b = $('rf-play');
+    if (a) a.textContent = t;
+    if (b) b.textContent = S.playing ? '⏸' : '▶';
+  }
 
   function setView(v) {
     S.view = v;
@@ -309,6 +347,7 @@
       } catch (e) {}
       sizeCanvas();
     }
+    updateFloat();
     S.dirty = true;
   }
   sw.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { setView(b.dataset.v); }); });
@@ -327,7 +366,7 @@
   tools.pose.onMouseDown = function (e) {
     if (S.mode !== 'pose') { say('Switch back from rest mode first (Anim tab)'); pd = null; return; }
     var hit = paper.project.hitTest(e.point, {
-      fill: true, stroke: true, tolerance: 6,
+      fill: true, stroke: true, tolerance: 8,
       match: function (h) { return h.item.className !== 'Raster' || !!rasterPixel(h.item, e.point); }
     });
     var it = hit ? topLevelItem(hit.item) : curBone();
@@ -374,12 +413,6 @@
   var _setTool = setTool;
   setTool = function (name) { _setTool(name); poseBtn.classList.toggle('active', name === 'pose'); };
   $('ra-tool-btn').addEventListener('click', function () { setTool('pose'); });
-  document.addEventListener('keydown', function (e) {
-    var tag = e.target.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key.toLowerCase() === 'm') setTool('pose');
-  });
   $('ra-seg').querySelectorAll('button').forEach(function (b) {
     b.addEventListener('click', function () {
       S.tool = b.dataset.t;
@@ -405,10 +438,11 @@
     sel.value = S.clip;
     var c = clip();
     $('ra-len').value = c.length; $('ra-fps').value = c.fps; $('ra-loop').checked = !!c.loop;
-    $('ra-ease').value = S.ease; $('ra-auto').checked = S.auto;
+    $('ra-ease').value = S.ease; $('ra-auto').checked = S.auto; syncAutoBtns();
   }
+  function syncAutoBtns() { $('ra-auto').checked = S.auto; $('rf-auto').classList.toggle('on', S.auto); }
   function switchClip(id) {
-    S.clip = id; S.playing = false; S.sel = []; S.gsel = null;
+    S.clip = id; S.playing = false; setPlayLabel(); S.sel = []; S.gsel = null;
     resetAll();
     S.frame = 0;
     if (S.mode === 'pose') evalFrame(0);
@@ -447,7 +481,9 @@
   });
   $('ra-fps').addEventListener('change', function () { clip().fps = clamp(Math.round(Number(this.value) || 12), 1, 60); this.value = clip().fps; });
   $('ra-loop').addEventListener('change', function () { clip().loop = this.checked; });
-  $('ra-auto').addEventListener('change', function () { S.auto = this.checked; say(S.auto ? 'Auto key ON' : 'Auto key off'); });
+  function setAuto(v) { S.auto = v; syncAutoBtns(); say(S.auto ? 'Auto key ON: every pose change is keyed' : 'Auto key off: press ◆ Key to save a pose'); }
+  $('ra-auto').addEventListener('change', function () { setAuto(this.checked); });
+  $('rf-auto').addEventListener('click', function () { setAuto(!S.auto); });
   $('ra-ease').addEventListener('change', function () { S.ease = this.value; });
   $('ra-cycle').addEventListener('click', function () {
     var last = clip().length - 1, n = 0;
@@ -528,10 +564,11 @@
   $('ra-key-loc').addEventListener('click', function () { var it = needBone(); if (it) keyAndSave(it, ['tx', 'ty']); });
   $('ra-key-scl').addEventListener('click', function () { var it = needBone(); if (it) keyAndSave(it, ['sx', 'sy']); });
   $('ra-key-op').addEventListener('click', function () { var it = needBone(); if (it) keyAndSave(it, ['op']); });
-  $('ra-key-allb').addEventListener('click', function () {
+  function keyAllBones() {
     boneList().forEach(function (it) { keyBone(it, CH); });
     saveState(); refreshBones(); S.dirty = true; say('Keyed every bone at frame ' + S.frame);
-  });
+  }
+  $('ra-key-allb').addEventListener('click', keyAllBones);
   $('ra-unkey').addEventListener('click', function () {
     var it = needBone();
     if (!it) return;
@@ -539,6 +576,15 @@
     if (!a) return;
     CH.forEach(function (ch) { a[ch] = a[ch].filter(function (k) { return k.f !== S.frame; }); });
     saveState(); refreshBones(); S.dirty = true;
+  });
+  $('ra-ease-all').addEventListener('click', function () {
+    var it = needBone();
+    if (!it) return;
+    var a = actOf(it, false), n = 0;
+    if (!a) { say('This bone has no keys'); return; }
+    CH.forEach(function (ch) { a[ch].forEach(function (k) { k.e = S.ease; n++; }); });
+    if (S.mode === 'pose') evalFrame(S.frame);
+    saveState(); S.dirty = true; say(n + ' key(s) set to "' + S.ease + '"');
   });
   $('ra-reset').addEventListener('click', function () {
     var it = needBone();
@@ -551,6 +597,49 @@
     resetAll();
     if (S.auto) boneList().forEach(function (it) { keyBone(it, CH); });
     saveState(); syncFields(); S.dirty = true;
+  });
+
+  // ---------------- quick motion ----------------
+  var QM = {
+    swing: { amt: 15, f: function (p, a) { return { rot: a * Math.sin(2 * Math.PI * p) }; } },
+    bob:   { amt: 8,  f: function (p, a) { return { ty: -a * (0.5 - 0.5 * Math.cos(2 * Math.PI * p)) }; } },
+    sway:  { amt: 8,  f: function (p, a) { return { tx: a * Math.sin(2 * Math.PI * p) }; } },
+    pulse: { amt: 6,  f: function (p, a) { var s = 1 + a / 100 * Math.sin(2 * Math.PI * p); return { sx: s, sy: s }; } },
+    fade:  { amt: 50, f: function (p, a) { return { op: 1 - clamp(a, 0, 100) / 100 * (0.5 - 0.5 * Math.cos(2 * Math.PI * p)) }; } }
+  };
+  $('ra-qm').addEventListener('change', function () { $('ra-qm-amt').value = QM[this.value].amt; });
+  function bakeMotion(it, type, amt, delay) {
+    var len = clip().length, def = QM[type], a = actOf(it, true);
+    var step = Math.max(1, Math.floor(len / 8)), frames = [], f;
+    for (f = 0; f < len; f += step) frames.push(f);
+    if (frames[frames.length - 1] !== len - 1) frames.push(len - 1);
+    Object.keys(def.f(0, amt)).forEach(function (ch) { a[ch] = []; });
+    frames.forEach(function (fr) {
+      var p = (((fr - delay) % len) + len) % len / len, vals = def.f(p, amt);
+      Object.keys(vals).forEach(function (ch) { a[ch].push({ f: fr, v: r3(vals[ch]), e: 'smooth' }); });
+    });
+  }
+  $('ra-qm-go').addEventListener('click', function () {
+    if (S.mode !== 'pose') { say('Lock the rest pose first'); return; }
+    if (clip().length < 4) { say('Make the clip at least 4 frames long'); return; }
+    var roots = selection.map(topLevelItem).filter(rigOf);
+    if (!roots.length) { say('Select a rigged part first (Rig selected)'); return; }
+    var type = $('ra-qm').value, amt = Number($('ra-qm-amt').value), chain = $('ra-qm-chain').checked;
+    var dl = clamp(Number($('ra-qm-delay').value) || 0, 0, 30);
+    if (isNaN(amt)) amt = QM[type].amt;
+    var t = buildTree(), n = 0, seen = {};
+    t.nodes.forEach(function (nd) {
+      if (roots.indexOf(nd.it) < 0) return;
+      (function go(x, lvl) {
+        if (seen[x.it.id]) return;
+        seen[x.it.id] = 1;
+        bakeMotion(x.it, type, amt, chain ? lvl * dl : 0); n++;
+        if (chain) x.kids.forEach(function (k) { go(k, lvl + 1); });
+      })(nd, 0);
+    });
+    evalFrame(S.frame); saveState(); refreshBones(); S.dirty = true;
+    if (!S.playing) togglePlay();
+    say(n + ' bone(s) animated. Playing. Edit keys in the dope sheet or graph.');
   });
 
   // ---------------- pose library ----------------
@@ -604,10 +693,11 @@
   function setFrame(f, quiet) {
     S.frame = clamp(Math.round(f), 0, clip().length - 1);
     if (S.mode === 'pose') evalFrame(S.frame);
-    $('ra-frame').value = S.frame;
+    $('ra-frame').value = S.frame; $('rf-fr').textContent = S.frame;
     if (!quiet) syncFields();
     S.dirty = true;
   }
+  function togglePlay() { S.playing = !S.playing; S.acc = 0; setPlayLabel(); }
   function keyFrames() {
     var set = {}, bl = curBone() ? [curBone()] : boneList();
     bl.forEach(function (it) {
@@ -616,22 +706,19 @@
     });
     return Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
   }
+  function prevKey() { var p = keyFrames().filter(function (f) { return f < S.frame; }); if (p.length) setFrame(p[p.length - 1]); }
+  function nextKey() { var n = keyFrames().filter(function (f) { return f > S.frame; }); if (n.length) setFrame(n[0]); }
   $('ra-first').addEventListener('click', function () { setFrame(0); });
   $('ra-prev').addEventListener('click', function () { setFrame(S.frame - 1); });
   $('ra-next').addEventListener('click', function () { setFrame(S.frame + 1); });
-  $('ra-play').addEventListener('click', function () {
-    S.playing = !S.playing; S.acc = 0;
-    this.textContent = S.playing ? '⏸ Pause' : '▶ Play';
-  });
+  $('ra-play').addEventListener('click', togglePlay);
   $('ra-frame').addEventListener('change', function () { setFrame(this.value); });
-  $('ra-pk').addEventListener('click', function () {
-    var p = keyFrames().filter(function (f) { return f < S.frame; });
-    if (p.length) setFrame(p[p.length - 1]);
-  });
-  $('ra-nk').addEventListener('click', function () {
-    var n = keyFrames().filter(function (f) { return f > S.frame; });
-    if (n.length) setFrame(n[0]);
-  });
+  $('ra-pk').addEventListener('click', prevKey);
+  $('ra-nk').addEventListener('click', nextKey);
+  $('rf-prev').addEventListener('click', function () { setFrame(S.frame - 1); });
+  $('rf-next').addEventListener('click', function () { setFrame(S.frame + 1); });
+  $('rf-play').addEventListener('click', togglePlay);
+  $('rf-key').addEventListener('click', function () { var it = needBone(); if (it) { keyAndSave(it, CH); say('Keyed at frame ' + S.frame); } });
   $('ra-zin').addEventListener('click', function () { V.cell = Math.min(60, V.cell * 1.3); S.dirty = true; });
   $('ra-zout').addEventListener('click', function () { V.cell = Math.max(4, V.cell / 1.3); S.dirty = true; });
   $('ra-gch').addEventListener('change', function () { S.gch = this.value; S.gsel = null; S.dirty = true; });
@@ -712,6 +799,7 @@
     });
     c.fillStyle = '#1e1e1e'; c.fillRect(0, 0, LW, RHT); c.fillStyle = '#888'; c.fillText('Bones', 6, RHT / 2);
     c.fillStyle = '#111'; c.fillRect(LW - 1, 0, 1, H);
+    if (!R.length) { c.fillStyle = '#888'; c.fillText('Rig parts first (Anim tab → Rig all)', LW + 12, RHT + 18); }
   }
 
   // ---------------- graph editor ----------------
@@ -871,14 +959,14 @@
         var hp = handlePos(k, nx);
         var cand = [['h1', hp.h1], ['h2', hp.h2]];
         for (i = 0; i < 2; i++) {
-          if (Math.hypot(x - X(cand[i][1].f), y - Y(cand[i][1].v)) < 12) {
+          if (Math.hypot(x - X(cand[i][1].f), y - Y(cand[i][1].v)) < 14) {
             dr = { t: 'handle', which: cand[i][0], k: k, nx: nx }; V.range = V.map.rg; return;
           }
         }
       }
     }
     for (i = 0; i < keys.length; i++) {
-      if (Math.hypot(x - X(keys[i].f), y - Y(keys[i].v)) < 12) {
+      if (Math.hypot(x - X(keys[i].f), y - Y(keys[i].v)) < 14) {
         S.gsel = { it: ch.it, ch: S.gch, key: keys[i] };
         S.sel = [{ it: ch.it, ch: S.gch, key: keys[i] }];
         dr = { t: 'gkey', k: keys[i], moved: false }; V.range = V.map.rg;
@@ -953,8 +1041,9 @@
     if (S.mode === 'pose') evalFrame(S.frame);
     saveState(); S.dirty = true;
   });
+  function selTargets() { return S.sel.length ? S.sel : (S.gsel ? [S.gsel] : []); }
   function deleteSelKeys() {
-    var targets = S.sel.length ? S.sel : (S.gsel ? [S.gsel] : []);
+    var targets = selTargets();
     if (!targets.length) { say('Select keys first'); return; }
     targets.forEach(function (s) {
       var a = actOf(s.it, false);
@@ -964,7 +1053,49 @@
     if (S.mode === 'pose') evalFrame(S.frame);
     saveState(); refreshBones(); S.dirty = true;
   }
+  function copyKeys() {
+    var t = selTargets();
+    if (!t.length) { say('Select keys first (tap a ◆)'); return; }
+    var m = Math.min.apply(null, t.map(function (s) { return s.key.f; }));
+    S.keyclip = t.map(function (s) { return { it: s.it, ch: s.ch, d: s.key.f - m, v: s.key.v, e: s.key.e }; });
+    say(t.length + ' key(s) copied');
+  }
+  function pasteKeys() {
+    if (!S.keyclip || !S.keyclip.length) { say('Copy keys first'); return; }
+    var one = S.keyclip.every(function (k) { return k.it === S.keyclip[0].it; }), cb = curBone();
+    var target = one && cb ? cb : null, n = 0;      // one bone copied + another selected = paste onto it
+    S.keyclip.forEach(function (k) {
+      var f = S.frame + k.d;
+      if (f > clip().length - 1) return;
+      var it = target || k.it;
+      if (!rigOf(it)) return;
+      addKey(it, k.ch, f, k.v).e = k.e; n++;
+    });
+    if (S.mode === 'pose') evalFrame(S.frame);
+    saveState(); refreshBones(); S.dirty = true; say(n + ' key(s) pasted at frame ' + S.frame);
+  }
   $('ra-delkeys').addEventListener('click', deleteSelKeys);
+  $('ra-copykeys').addEventListener('click', copyKeys);
+  $('ra-pastekeys').addEventListener('click', pasteKeys);
+
+  // ---------------- keyboard shortcuts ----------------
+  document.addEventListener('keydown', function (e) {
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.altKey) return;
+    var k = e.key, low = k.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+    if (!mod && low === 'm') { setTool('pose'); return; }
+    if (!(S.tabOn || S.view !== 'classic')) return;       // below: only while animating
+    if (mod && hover && low === 'c') { e.preventDefault(); e.stopImmediatePropagation(); copyKeys(); return; }
+    if (mod && hover && low === 'v') { e.preventDefault(); e.stopImmediatePropagation(); pasteKeys(); return; }
+    if (mod) return;
+    if (k === ' ') { e.preventDefault(); togglePlay(); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); setFrame(S.frame - (e.shiftKey ? 5 : 1)); }
+    else if (k === 'ArrowRight') { e.preventDefault(); setFrame(S.frame + (e.shiftKey ? 5 : 1)); }
+    else if (k === 'ArrowUp') { e.preventDefault(); prevKey(); }
+    else if (k === 'ArrowDown') { e.preventDefault(); nextKey(); }
+    else if (low === 'k') { if (e.shiftKey) keyAllBones(); else { var it = needBone(); if (it) keyAndSave(it, CH); } }
+  });
   window.addEventListener('keydown', function (e) {
     var tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
@@ -988,7 +1119,7 @@
     var sheet = document.createElement('canvas'); sheet.width = W; sheet.height = H;
     var sctx = sheet.getContext('2d'), bg = exportBgColor(), meta = [];
     if (bg) { sctx.fillStyle = bg; sctx.fillRect(0, 0, W, H); }
-    S.playing = false;
+    S.playing = false; setPlayLabel();
     for (var i = 0; i < n; i++) {
       evalFrame(i);
       var f = renderArea(frameArea(), cw, ch, false, bg), x = (i % cols) * cw, y = Math.floor(i / cols) * ch;
@@ -1010,7 +1141,7 @@
     var cw = Math.max(1, Math.round(frame.w * sc)), ch = Math.max(1, Math.round(frame.h * sc));
     if (cw > 1024 || ch > 1024 || cw * ch * n > 30000000) { alert('Too big. Lower Scale %.'); return; }
     var bg = exportBgColor();
-    S.playing = false;
+    S.playing = false; setPlayLabel();
     try {
       var blob = await MediaExport.gif(function (i) { evalFrame(i); return renderArea(frameArea(), cw, ch, false, bg); }, n, cw, ch, cl.fps, !bg, cl.loop, say);
       downloadBlob(blob, cl.name.replace(/[^\w\-]+/g, '_') + '.gif');
@@ -1084,7 +1215,7 @@
       if (adv) {
         var f = S.frame + adv;
         if (f >= cl.length) {
-          if (cl.loop) f = f % cl.length; else { f = cl.length - 1; S.playing = false; $('ra-play').textContent = '▶ Play'; }
+          if (cl.loop) f = f % cl.length; else { f = cl.length - 1; S.playing = false; setPlayLabel(); }
         }
         setFrame(f, true);
       }
@@ -1095,11 +1226,12 @@
     if (S.view !== 'classic') {
       var it = curBone(), msg = 'Clip: ' + clip().name + ' · frame ' + S.frame + '/' + (clip().length - 1);
       if (S.mode === 'rest') msg += ' · REST MODE';
-      else if (it && !CH.some(function (ch) { var a = actOf(it, false); return a && a[ch].length; })) msg += ' · no keys on this bone';
+      else if (S.auto) msg += ' · AUTO KEY';
+      if (it && S.mode !== 'rest' && !CH.some(function (ch) { var a = actOf(it, false); return a && a[ch].length; })) msg += ' · no keys on this bone';
       $('ra-status').textContent = msg;
     }
   };
 
-  renderClipUI(); renderPoses(); refreshAll(); setView('classic');
+  renderClipUI(); renderPoses(); refreshAll(); setView('classic'); setPlayLabel();
   window.charAnim = { state: S, evalFrame: evalFrame, applyPose: applyPose };
 })();
