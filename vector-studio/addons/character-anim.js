@@ -226,7 +226,9 @@
     '#ra-float button{min-width:40px;height:36px;padding:0 10px;font-size:14px;background:#3a3a3a;color:#eee;border:1px solid #555;border-radius:18px;cursor:pointer}' +
     '#ra-float button.on{background:#2f6fed;border-color:#2f6fed}' +
     '#ra-float span{color:#ff9f1c;font-size:12px;min-width:44px;text-align:center}' +
-    '@media (pointer:coarse){#ra-switch button,#ra-bar button{padding:9px 12px}#ra-float button{min-width:48px;height:44px}}';
+    '.ra-step{display:inline-flex;align-items:center;gap:3px}.ra-step button,#ra-bar .ra-step button{width:30px;height:30px;padding:0;font-size:18px;line-height:1;background:#3a3a3a;color:#eee;border:1px solid #555;border-radius:4px;cursor:pointer;touch-action:manipulation;user-select:none}.ra-step input,#ra-bar .ra-step input[type=number]{width:62px;text-align:center}' +
+    '#ra-ov{display:none;position:fixed;pointer-events:none;z-index:40}' +
+    '@media (pointer:coarse){#ra-switch button,#ra-bar button{padding:9px 12px}#ra-float button{min-width:48px;height:44px}.ra-step button,#ra-bar .ra-step button{width:44px;height:40px}}';
   document.head.appendChild(css);
 
   var tabBtn = document.createElement('button');
@@ -246,6 +248,7 @@
     '<div class="layer-actions"><button id="ra-rig">Rig selected</button><button id="ra-rigall">Rig all</button><button id="ra-unrig">Unrig</button></div>' +
     '<div class="layer-actions"><button id="ra-mode">✎ Edit rest pose</button></div>' +
     '<p class="hint" id="ra-hint">Build parents with Arrange → Rig → Set parent (child first, then click the parent).</p>' +
+    '<label class="prop-row">Show bones on canvas <input type="checkbox" id="ra-showb" checked></label>' +
     '<ul id="ra-bones"></ul>' +
     '<h3 class="section-title">Quick motion (1 tap animation)</h3>' +
     '<label class="prop-row">Motion <select id="ra-qm"><option value="swing">Swing (rotate)</option><option value="bob">Bob (up / down)</option><option value="sway">Sway (left / right)</option><option value="pulse">Pulse / breathe (scale)</option><option value="fade">Fade</option></select></label>' +
@@ -323,7 +326,7 @@
   var fl = document.createElement('div');
   fl.id = 'ra-float';
   fl.innerHTML = '<button id="rf-prev">◀</button><button id="rf-play">▶</button><button id="rf-next">▶</button>' +
-    '<span id="rf-fr">0</span><button id="rf-key">◆ Key</button><button id="rf-auto" class="on">Auto</button>';
+    '<span id="rf-fr">0</span><button id="rf-key">◆ Key</button><button id="rf-auto" class="on">Auto</button><button id="rf-eye" class="on" title="Show / hide bones">🦴</button>';
   document.body.appendChild(fl);
   function updateFloat() { fl.style.display = (S.tabOn || S.view !== 'classic') ? 'flex' : 'none'; }
   function setPlayLabel() {
@@ -360,6 +363,49 @@
   }
   new ResizeObserver(function () { if (S.view !== 'classic') sizeCanvas(); }).observe(hold);
 
+  // ---------------- +/- steppers for every number box ----------------
+  function addStepper(el, step, min, max, live) {
+    if (!el) return;
+    var box = document.createElement('span'); box.className = 'ra-step';
+    el.parentNode.insertBefore(box, el);
+    var dec = document.createElement('button'), inc = document.createElement('button');
+    dec.type = inc.type = 'button'; dec.textContent = '−'; inc.textContent = '+';
+    box.appendChild(dec); box.appendChild(el); box.appendChild(inc);
+    var count = 0, active = false, t1, t2;
+    function bump(dir) {
+      if (el.disabled) return;
+      var mul = count > 18 ? 5 : 1; count++;
+      var v = Number(el.value) || 0, nv = Math.round((v + dir * step * mul) * 1000) / 1000;
+      if (min != null) nv = Math.max(min, nv);
+      if (max != null) nv = Math.min(max, nv);
+      el.value = nv;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      if (live) el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function stop() {
+      clearTimeout(t1); clearInterval(t2);
+      if (active) { active = false; if (!live) el.dispatchEvent(new Event('change', { bubbles: true })); }
+    }
+    [[dec, -1], [inc, 1]].forEach(function (p) {
+      p[0].addEventListener('pointerdown', function (e) {
+        e.preventDefault(); active = true; count = 0; bump(p[1]);
+        t1 = setTimeout(function () { t2 = setInterval(function () { bump(p[1]); }, 70); }, 380);
+      });
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { p[0].addEventListener(ev, stop); });
+    });
+  }
+  CH.forEach(function (ch) {
+    var big = ch === 'rot' || ch === 'tx' || ch === 'ty';
+    addStepper($('ra-f-' + ch), big ? 2 : 0.05, ch === 'op' ? 0 : null, ch === 'op' ? 1 : null, false);
+  });
+  addStepper($('ra-frame'), 1, 0, null, true);
+  addStepper($('ra-len'), 1, 1, 600, true);
+  addStepper($('ra-fps'), 1, 1, 60, true);
+  addStepper($('ra-qm-amt'), 1, null, null, false);
+  addStepper($('ra-qm-delay'), 1, 0, 30, false);
+  addStepper($('ra-ex-scale'), 10, 10, 400, false);
+  addStepper($('ra-ex-cols'), 1, 1, 64, false);
+
   // ---------------- tool: pose ----------------
   tools.pose = new paper.Tool();
   var pd = null;
@@ -370,7 +416,11 @@
       match: function (h) { return h.item.className !== 'Raster' || !!rasterPixel(h.item, e.point); }
     });
     var it = hit ? topLevelItem(hit.item) : curBone();
-    if (!it || !rigOf(it)) { say('Rig the object first (Anim tab → Rig selected)'); pd = null; return; }
+    if (!it) { say('Tap a part of the character'); pd = null; return; }
+    if (!rigOf(it)) {
+      if (!rigIt(it)) { pd = null; return; }
+      say('Auto-rigged "' + (it.name || 'Part') + '"'); refreshBones();
+    }
     if (selection.indexOf(it) < 0) setSelection([it]);
     pd = { it: it, last: e.point, changed: {} };
     applyPose();
@@ -411,7 +461,7 @@
   $('toolbar').appendChild(poseBtn);
   poseBtn.addEventListener('click', function () { setTool('pose'); });
   var _setTool = setTool;
-  setTool = function (name) { _setTool(name); poseBtn.classList.toggle('active', name === 'pose'); };
+  setTool = function (name) { _setTool(name); S.toolName = name; poseBtn.classList.toggle('active', name === 'pose'); };
   $('ra-tool-btn').addEventListener('click', function () { setTool('pose'); });
   $('ra-seg').querySelectorAll('button').forEach(function (b) {
     b.addEventListener('click', function () {
@@ -697,7 +747,15 @@
     if (!quiet) syncFields();
     S.dirty = true;
   }
-  function togglePlay() { S.playing = !S.playing; S.acc = 0; setPlayLabel(); }
+  function hasKeys(it) { var a = actOf(it, false); return !!a && CH.some(function (ch) { return a[ch].length; }); }
+  function togglePlay() {
+    S.playing = !S.playing; S.acc = 0; setPlayLabel();
+    if (!S.playing) return;
+    var bl = boneList();
+    if (S.mode === 'rest') say('You are in REST mode. Anim tab → press "Lock rest pose" to play');
+    else if (!bl.length) say('Nothing is rigged yet: Anim tab → Rig all');
+    else if (!bl.some(hasKeys)) say('No keys in this clip yet: pose with Auto key ON, or use ⚡ Quick motion');
+  }
   function keyFrames() {
     var set = {}, bl = curBone() ? [curBone()] : boneList();
     bl.forEach(function (it) {
@@ -1204,12 +1262,54 @@
     refreshBones(); syncFields(); S.dirty = true;
   }
 
-  // ---------------- tick ----------------
-  var prevTick = window.tickTimeline, lastSig = '';
-  window.tickTimeline = function (e) {
-    if (prevTick) prevTick(e);
+  // ---------------- visible bones overlay ----------------
+  S.showBones = true;
+  var ov = document.createElement('canvas'); ov.id = 'ra-ov';
+  document.body.appendChild(ov);
+  var octx = ov.getContext('2d');
+  function drawBones() {
+    var show = S.showBones && (S.tabOn || S.view !== 'classic' || S.toolName === 'pose');
+    var list = show ? boneList() : [];
+    if (!list.length) { ov.style.display = 'none'; return; }
+    var el = paper.view.element, r = el.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+    ov.style.display = 'block';
+    ov.style.left = r.left + 'px'; ov.style.top = r.top + 'px'; ov.style.width = r.width + 'px'; ov.style.height = r.height + 'px';
+    var w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (ov.width !== w || ov.height !== h) { ov.width = w; ov.height = h; }
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0); octx.clearRect(0, 0, r.width, r.height);
+    var kx = r.width / (paper.view.viewSize.width || r.width), ky = r.height / (paper.view.viewSize.height || r.height);
+    var P = function (pt) { var q = paper.view.projectToView(pt); return { x: q.x * kx, y: q.y * ky }; };
+    var t = buildTree(), c = octx;
+    c.lineCap = 'round'; c.font = '11px system-ui,sans-serif'; c.textBaseline = 'bottom';
+    t.nodes.forEach(function (n) {
+      if (!n.parent) return;
+      var p = P(worldPivot(n.it)), q = P(worldPivot(n.parent.it));
+      c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(p.x, p.y);
+      c.strokeStyle = 'rgba(0,0,0,.65)'; c.lineWidth = 6; c.stroke();
+      c.strokeStyle = '#ff9f1c'; c.lineWidth = 3; c.stroke();
+    });
+    t.nodes.forEach(function (n) {
+      var p = P(worldPivot(n.it)), sel = selection.indexOf(n.it) >= 0, nm = n.it.name || 'Part';
+      c.beginPath(); c.arc(p.x, p.y, sel ? 10 : 7, 0, 6.3);
+      c.fillStyle = sel ? '#2f6fed' : '#ff9f1c'; c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = 2; c.stroke();
+      c.lineWidth = 3; c.strokeStyle = 'rgba(0,0,0,.8)'; c.strokeText(nm, p.x + 12, p.y - 6);
+      c.fillStyle = '#fff'; c.fillText(nm, p.x + 12, p.y - 6);
+    });
+  }
+  function setShowBones(v) {
+    S.showBones = v; $('ra-showb').checked = v; $('rf-eye').classList.toggle('on', v);
+  }
+  $('ra-showb').addEventListener('change', function () { setShowBones(this.checked); });
+  $('rf-eye').addEventListener('click', function () { setShowBones(!S.showBones); });
+
+  // ---------------- main loop (own requestAnimationFrame, playback does not depend on the app's tick) ----------------
+  var lastT = 0, lastSig = '';
+  function loop(t) {
+    requestAnimationFrame(loop);
+    var dt = lastT ? Math.min((t - lastT) / 1000, 0.25) : 0.016; lastT = t;
     if (S.playing && S.mode === 'pose') {
-      S.acc += (e && e.delta) || 0.016;
+      S.acc += dt;
       var cl = clip(), step = 1 / cl.fps, adv = 0;
       while (S.acc >= step) { S.acc -= step; adv++; }
       if (adv) {
@@ -1218,6 +1318,7 @@
           if (cl.loop) f = f % cl.length; else { f = cl.length - 1; S.playing = false; setPlayLabel(); }
         }
         setFrame(f, true);
+        try { paper.view.update(); } catch (e) {}
       }
     }
     var sig = selection.map(function (i) { return i.id; }).join(',') + '|' + boneList().length;
@@ -1227,10 +1328,12 @@
       var it = curBone(), msg = 'Clip: ' + clip().name + ' · frame ' + S.frame + '/' + (clip().length - 1);
       if (S.mode === 'rest') msg += ' · REST MODE';
       else if (S.auto) msg += ' · AUTO KEY';
-      if (it && S.mode !== 'rest' && !CH.some(function (ch) { var a = actOf(it, false); return a && a[ch].length; })) msg += ' · no keys on this bone';
+      if (it && S.mode !== 'rest' && !hasKeys(it)) msg += ' · no keys on this bone';
       $('ra-status').textContent = msg;
     }
-  };
+    try { drawBones(); } catch (e) {}
+  }
+  requestAnimationFrame(loop);
 
   renderClipUI(); renderPoses(); refreshAll(); setView('classic'); setPlayLabel();
   window.charAnim = { state: S, evalFrame: evalFrame, applyPose: applyPose };
